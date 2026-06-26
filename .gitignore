@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Secrets & local data (never commit)
+.env
+*.db
+ics_demo.db
+
+# OS
+.DS_Store
+
+# Local logs / task outputs
+*.log
+*.output

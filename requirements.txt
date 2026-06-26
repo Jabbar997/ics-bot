@@ -1,0 +1,31 @@
+# Investment Command System (ICS) — MVP requirements
+# Python 3.11+
+
+# --- Core data / numerics ---
+pandas>=2.0
+numpy>=1.24
+python-dateutil>=2.8
+
+# --- Persistence ---
+SQLAlchemy>=2.0
+
+# --- Config ---
+pydantic>=2.5
+pydantic-settings>=2.1
+PyYAML>=6.0
+
+# --- Market data (paper / simulation only) ---
+yfinance>=0.2.40
+
+# --- Telegram reporting bot ---
+python-telegram-bot>=21.0
+
+# --- Scheduling ---
+APScheduler>=3.10
+
+# --- Testing ---
+pytest>=7.4
+
+# NOTE: Technical indicators are implemented manually in app/features/indicators.py
+# (no hard dependency on pandas-ta). yfinance and python-telegram-bot are imported
+# lazily so the deterministic core + test suite run without network access.

@@ -1,0 +1,67 @@
+mode: paper_only
+
+capital:
+  initial_capital_usd: 266.0
+  base_currency: USD
+
+risk:
+  max_open_positions: 3
+  max_position_size_pct: 10
+  weekly_loss_limit_pct: 5
+  monthly_loss_limit_pct: 12
+  max_drawdown_limit_pct: 15
+  minimum_dqs: 70
+  target_average_dqs: 75
+  stop_loss_atr_multiplier: 2
+  absolute_stop_loss_pct: 7
+
+benchmark:
+  symbol: SPY
+
+market:
+  data_provider: yfinance
+  timeframe: 1d
+  history_years: 5
+  timezone: America/New_York
+
+paper:
+  commission_per_trade_usd: 0.0
+  slippage_pct: 0.0
+  allow_fractional_shares: true
+
+telegram:
+  enabled: true
+  allowed_user_ids: []
+  daily_report_time_ksa: "01:15"
+  weekly_report_day: "FRI"
+
+watchlist:
+  - SPY
+  - QQQ
+  - VTI
+  - SCHD
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META
+  - TSLA
+  - AVGO
+  - COST
+  - JPM
+  - XOM
+  - JNJ
+  - PG
+  - KO
+  - UNH
+  - CAT
+
+forbidden_assets:
+  - crypto
+  - options
+  - futures
+  - forex
+  - penny_stocks
+  - leverage
+  - short_selling

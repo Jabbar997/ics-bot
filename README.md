@@ -1,0 +1,248 @@
+# ICS — Investment Command System (MVP v1.0)
+
+> **⚠️ PAPER TRADING ONLY — EDUCATIONAL SIMULATION.**
+> This system never connects to a real broker, never moves real money, and never
+> places real orders. It does **not** provide financial advice and does **not**
+> guarantee profit. It exists to *simulate, score, and audit* investment
+> decisions for learning and internal research only. Mode is **Analyst → Trainee**.
+> Real-money trading is out of scope and forbidden in this build (see
+> *Future Roadmap → ICS-DOC-003*).
+
+ICS is a modular decision-and-audit engine, not a "trading bot". Every candidate
+decision flows through a fixed pipeline, is scored, risk-checked, executed only
+on a **virtual** portfolio, and written to an immutable audit log.
+
+---
+
+## 1. Architecture
+
+```
+Market Data Layer (yfinance, read-only)
+      ↓
+Data Cleaner          (dedupe, sort, fill, reject incomplete)
+      ↓
+Feature Engine        (MA/RSI/MACD/ATR/vol/beta — manual, transparent)
+      ↓
+Market Regime Analyzer (SPY → bull / weak_bull / sideways / bear / panic)
+      ↓
+Strategy Engine       (trend, momentum, pullback, defensive_cash)
+      ↓
+Decision Quality Score (0–100, 5 weighted components, min 70)
+      ↓
+Risk Manager          (size, stops, limits, watchlist, kill switch)
+      ↓
+Paper Trading Engine  (virtual broker — NO real orders ever)
+      ↓
+Audit Log             (every decision; a decision without one is invalid)
+      ↓
+Performance Evaluator (return, Sharpe, drawdown, win rate, expectancy)
+      ↓
+Telegram Reporting Bot (reports + control commands, auth-gated)
+```
+
+Starting capital: **$266.00**. Benchmark: **SPY**.
+
+### Project layout
+
+```
+ics/
+  app/
+    main.py            # CLI + daily/weekly/backtest/bot/scheduler/demo workflows
+    config.py          # pydantic config (YAML + .env)
+    logging_config.py
+    domain.py          # shared enums + dataclasses (Signal, DQSResult, ...)
+    data/              # market_data.py (yfinance), cleaner.py
+    features/          # indicators.py, feature_engine.py
+    market/            # regime.py
+    strategies/        # base, trend, momentum, pullback, defensive_cash, engine
+    decision/          # dqs.py, decision_engine.py
+    risk/              # risk_manager.py, kill_switch.py
+    paper/             # broker.py, portfolio.py, orders.py  (virtual only)
+    performance/       # evaluator.py, benchmarks.py
+    telegram/          # bot.py, reports.py, commands.py
+    db/                # database.py, models.py, repositories.py
+    backtesting/       # backtester.py, walk_forward.py
+    utils/             # time.py, money.py
+  tests/               # pytest suite (50 tests)
+  config.yaml  .env.example  requirements.txt  README.md
+```
+
+---
+
+## 2. Setup
+
+Requires **Python 3.11+**.
+
+```bash
+cd ics
+python3.11 -m venv .venv
+source .venv/bin/activate           # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+cp .env.example .env                # then edit .env
+python -m app.main init-db          # create tables + sync watchlist
+```
+
+### Environment variables (`.env`)
+
+| Variable                    | Purpose                                                       |
+|-----------------------------|---------------------------------------------------------------|
+| `TELEGRAM_BOT_TOKEN`        | Bot token from @BotFather. Leave blank to run without Telegram |
+| `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated numeric Telegram user IDs allowed to use the bot |
+| `DATABASE_URL`              | SQLAlchemy URL. Default `sqlite:///./ics.db` (Postgres-ready)  |
+
+Secrets live only in `.env` — never in `config.yaml`, never logged, never sent
+to users.
+
+---
+
+## 3. Commands
+
+```bash
+python -m app.main init-db      # create schema + sync watchlist
+python -m app.main demo         # OFFLINE synthetic daily cycle (no network) — great smoke test
+python -m app.main daily        # one live paper cycle (fetches yfinance data)
+python -m app.main daily --send # ... and push the daily report to Telegram
+python -m app.main weekly       # build the weekly report (add --send to push)
+python -m app.main backtest     # 5y backtest + walk-forward split summary
+python -m app.main backtest --period 5y
+python -m app.main bot          # run the Telegram bot (long-polling)
+python -m app.main scheduler    # APScheduler: daily + weekly jobs (KSA times)
+```
+
+### Run the Telegram bot
+
+1. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USER_IDS` in `.env`.
+2. `python -m app.main bot`
+3. In Telegram, message your bot `/start`.
+
+Commands: `/start /status /portfolio /positions /today /weekly /rules
+/watchlist /audit /rejected /performance /kill /stop /resume`. Sending plain
+`STOP` (or `/stop`) **freezes the system immediately** (cancels new entries; no
+real positions exist to close). `/resume` clears the freeze. Unknown users get
+exactly `Unauthorized.`
+
+### Run a backtest
+
+```bash
+python -m app.main backtest
+```
+
+Pulls ~5y of daily data for the watchlist + SPY, prints the Train (70%) /
+Validation (20%) / Walk-forward (10%) date ranges, then replays the **exact live
+pipeline** and prints returns, Sharpe, max drawdown, win rate, average DQS, and
+the audit-log count.
+
+### Run the daily paper workflow manually
+
+```bash
+python -m app.main daily        # uses live yfinance data
+# or, with no network:
+python -m app.main demo         # deterministic synthetic data
+```
+
+### Run the tests
+
+```bash
+python -m pytest                # 50 tests, no network required
+```
+
+---
+
+## 4. Configuration guide (`config.yaml`)
+
+All business rules are centralised here (and in dedicated rule modules), never
+scattered in code.
+
+- `capital.initial_capital_usd` — starting virtual capital (**266.0**).
+- `risk.*` — max open positions (3), max position size (10%), weekly/monthly loss
+  limits (−5% / −12%), max drawdown (−15%), `minimum_dqs` (70), stop-loss as
+  `min(2×ATR, 7%)`.
+- `benchmark.symbol` — SPY.
+- `market.*` — provider (yfinance), timeframe (1d), history (5y), timezone.
+- `paper.*` — commission per trade (0.0, configurable) and slippage % (0.0).
+- `telegram.*` — enabled flag, allowed IDs, daily report time (KSA), weekly day.
+- `watchlist` — the 20 allowed US stocks/ETFs. **Symbols outside the watchlist
+  are rejected** by the risk manager unless you change this list.
+- `forbidden_assets` — crypto, options, futures, forex, penny stocks, leverage,
+  short selling (documented and enforced: the broker is long-only & cash-funded).
+
+### Decision Quality Score (DQS)
+
+| Component               | Max |
+|-------------------------|-----|
+| Strategy alignment      | 25  |
+| Risk management         | 25  |
+| Timing quality          | 20  |
+| Market regime strength  | 15  |
+| Reason clarity          | 15  |
+| **Total**               | 100 |
+
+DQS ≥ 70 → eligible (if the risk manager also approves). DQS < 70 → rejected and
+logged as a **rejected opportunity**. Target average DQS ≥ 75.
+
+### Execution convention (no look-ahead)
+
+- **Backtest:** signal generated after the close of day *t*; the order fills at
+  the **next trading day's open** (`t+1`), and only if that bar exists.
+  Indicators are strictly backward-looking. This is verified by
+  `tests/test_backtester.py::test_backtester_no_lookahead_fills_at_next_open`.
+- **Live daily:** fills at the latest available close (the best paper proxy when
+  acting on the most recent bar).
+
+### Kill Switch
+
+| Level | Trigger | Action |
+|-------|---------|--------|
+| L1 Warning | weekly ≤ −5% or 3 consecutive losses | stop new entries, report, 48h cooldown |
+| L2 Freeze | monthly ≤ −8% or severe-event flag | close 50% of paper positions, stop entries, review |
+| L3 Full Stop | monthly ≤ −12% or drawdown > 15% | close all paper positions, freeze, manual review |
+| Manual STOP | `STOP` / `/stop` | immediate freeze, cancel entries (no real positions) |
+
+---
+
+## 5. Safety model
+
+- **No real broker integration anywhere.** The only execution path is
+  `app/paper/broker.py`, which mutates a local virtual portfolio. There is no
+  Alpaca / IBKR / Robinhood code, no API keys for order routing, no
+  `real_order()` / `live_trade()` / margin / short / options / crypto.
+- `mode` is validated to be `paper_only`; any other value raises at startup.
+- The broker is **long-only and cash-funded** — it will never spend cash it
+  doesn't have, so the portfolio can't go negative (no leverage/margin).
+- Telegram is **auth-gated**: only configured user IDs are served; everyone else
+  gets `Unauthorized.` Errors are logged server-side; users never see stack
+  traces or tokens.
+
+---
+
+## 6. Known limitations
+
+- Indicator warm-up requires ≥ ~210 clean bars; symbols with less history are
+  rejected (never decided on from incomplete data).
+- Live data quality depends entirely on yfinance (free, occasionally flaky); the
+  fetch layer cleans and validates but cannot fix upstream gaps.
+- Strategy logic is intentionally simple/explainable, not optimised; backtests on
+  short windows will not reach the 100-trade qualification bar.
+- Beta uses a rolling 60-day window vs SPY and is informational only.
+- The scheduler/bot run as separate long-lived processes; there is no built-in
+  process supervisor.
+- "Severe economic/news event" (kill-switch L2) is a manual flag — no news feed
+  is wired in for the MVP.
+
+---
+
+## 7. Future roadmap
+
+- **ICS-DOC-003 — Real Trading Governance** (separate document; **not** in this
+  build): any real-money path must be designed, reviewed, and governed there.
+- Postgres migration (the repository layer is already isolated for this).
+- Richer strategies + parameter optimisation with proper walk-forward validation.
+- News / macro event ingestion to drive the L2 severe-event flag automatically.
+- Web dashboard alongside the Telegram reports.
+- Per-strategy attribution and a learning-note feedback loop on the audit log.
+
+---
+
+*ICS is for educational and internal simulation only. Nothing here is financial
+advice.*

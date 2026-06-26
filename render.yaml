@@ -1,0 +1,28 @@
+# Render Blueprint for the ICS Telegram bot.
+#
+# Assumes the repository ROOT is this `ics/` folder. If instead your repo root is
+# the parent directory, move this file to that root and add `rootDir: ics` under
+# the service.
+#
+# NOTE: a Background Worker requires a PAID instance type — Render has no free
+# worker tier. The persistent disk keeps the SQLite database across deploys.
+services:
+  - type: worker
+    name: ics-bot
+    runtime: python
+    plan: starter            # paid worker plan
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.main bot
+    autoDeploy: true
+    numInstances: 1          # long-polling — never run more than one
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # set the value in the Render dashboard (secret)
+      - key: TELEGRAM_ALLOWED_USER_IDS
+        sync: false
+      - key: DATABASE_URL
+        value: sqlite:////var/data/ics.db
+    disk:
+      name: ics-data
+      mountPath: /var/data
+      sizeGB: 1
