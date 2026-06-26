@@ -24,6 +24,8 @@ class ICSBot:
         self.config = config
         self.service = CommandService(config)
         self.allowed: List[int] = list(config.telegram.allowed_user_ids)
+        self._app = None        # the running telegram Application (set in post_init)
+        self._scheduler = None  # AsyncIOScheduler for daily / weekly reports
 
     # -- auth ------------------------------------------------------------- #
     def is_authorized(self, user_id: int | None) -> bool:
@@ -106,9 +108,10 @@ class ICSBot:
             )
 
     async def _post_init(self, app) -> None:
-        """Populate the Telegram command menu (the blue 'Menu' button)."""
+        """Populate the Telegram command menu and start the report scheduler."""
         from telegram import BotCommand
 
+        self._app = app
         await app.bot.set_my_commands(
             [
                 BotCommand("start", "ترحيب + تنبيه الأمان"),
@@ -130,6 +133,95 @@ class ICSBot:
             ]
         )
         log.info("Telegram command menu registered (%d commands).", 16)
+
+        # Start the in-process scheduler so the SAME worker also pushes the
+        # daily/weekly reports automatically (no separate service needed).
+        if self.config.telegram.enabled and self.allowed:
+            self._start_scheduler()
+        else:
+            log.warning("Scheduler not started (telegram disabled or no authorized users).")
+
+    # -- scheduled reports ------------------------------------------------ #
+    def _start_scheduler(self) -> None:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+
+        from app.utils.time import KSA, parse_hhmm
+
+        hh, mm = parse_hhmm(self.config.telegram.daily_report_time_ksa)
+        weekday = self.config.telegram.weekly_report_day.lower()[:3]
+        weekly_minute = (mm + 5) % 60
+
+        self._scheduler = AsyncIOScheduler(timezone=KSA)
+        self._scheduler.add_job(
+            self._run_daily_job,
+            CronTrigger(hour=hh, minute=mm, timezone=KSA),
+            id="daily_report",
+            replace_existing=True,
+        )
+        self._scheduler.add_job(
+            self._run_weekly_job,
+            CronTrigger(day_of_week=weekday, hour=hh, minute=weekly_minute, timezone=KSA),
+            id="weekly_report",
+            replace_existing=True,
+        )
+        self._scheduler.start()
+        log.info(
+            "Report scheduler started: daily %02d:%02d KSA, weekly %s %02d:%02d KSA.",
+            hh, mm, weekday, hh, weekly_minute,
+        )
+
+    async def _broadcast(self, text: str) -> None:
+        for uid in self.allowed:
+            try:
+                await self._app.bot.send_message(chat_id=uid, text=text)
+            except Exception:
+                log.exception("Failed to send scheduled report to %s", uid)
+
+    async def _run_daily_job(self) -> None:
+        import asyncio
+
+        from app.main import run_daily_workflow
+
+        log.info("Running scheduled DAILY workflow...")
+        loop = asyncio.get_running_loop()
+        try:
+            # Blocking (network + DB) work runs in a thread so the bot keeps
+            # answering commands; the workflow itself does not send (we broadcast).
+            text = await loop.run_in_executor(
+                None, lambda: run_daily_workflow(self.config, send_report=False)
+            )
+            await self._broadcast(text)
+            log.info("Daily report sent to %d user(s).", len(self.allowed))
+        except Exception:
+            log.exception("Scheduled daily workflow failed")
+
+    async def _run_weekly_job(self) -> None:
+        import asyncio
+
+        log.info("Running scheduled WEEKLY workflow...")
+        loop = asyncio.get_running_loop()
+        try:
+            text = await loop.run_in_executor(None, self._build_weekly_text)
+            await self._broadcast(text)
+            log.info("Weekly report sent to %d user(s).", len(self.allowed))
+        except Exception:
+            log.exception("Scheduled weekly workflow failed")
+
+    def _build_weekly_text(self) -> str:
+        """Compute SPY's weekly return then build the weekly report (sync)."""
+        from app.main import run_weekly_workflow
+
+        spy_weekly = 0.0
+        try:
+            from app.data.market_data import fetch_history
+            from app.performance.benchmarks import period_return
+
+            spy = fetch_history(self.config.benchmark.symbol, period="1mo")
+            spy_weekly = period_return(spy["close"].tail(6))
+        except Exception:
+            log.warning("Could not fetch SPY weekly return; using 0.")
+        return run_weekly_workflow(self.config, spy_weekly=spy_weekly, send_report=False)
 
     async def _on_error(self, update, context):
         log.exception("Unhandled bot error: %s", context.error)

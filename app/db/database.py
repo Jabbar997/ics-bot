@@ -36,8 +36,16 @@ def _json_serializer(obj: Any) -> str:
 
 
 def init_engine(database_url: str = "sqlite:///./ics.db", echo: bool = False) -> Engine:
-    """Create (or recreate) the global engine and session factory."""
+    """Create the global engine and session factory.
+
+    Idempotent: if an engine for the same URL already exists it is reused, so a
+    workflow that calls ``init_engine`` again (e.g. the scheduled report job)
+    never tears down a pool that a live command handler is using.
+    """
     global _engine, _SessionFactory
+
+    if _engine is not None and str(_engine.url) == database_url:
+        return _engine
 
     connect_args = {}
     if database_url.startswith("sqlite"):
