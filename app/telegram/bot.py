@@ -10,6 +10,8 @@ does not require it at import time.
 """
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Callable, List
 
@@ -52,7 +54,24 @@ class ICSBot:
                 "TELEGRAM_BOT_TOKEN is not set. Configure .env before running the bot."
             )
 
-        app = Application.builder().token(token).post_init(self._post_init).build()
+        # Resilient httpx timeouts (seconds). The getUpdates (long-poll) read
+        # timeout MUST exceed the long-poll `timeout` passed to run_polling,
+        # otherwise httpx aborts the held connection with ReadError/ReadTimeout.
+        app = (
+            Application.builder()
+            .token(token)
+            .connect_timeout(30.0)
+            .read_timeout(30.0)
+            .write_timeout(30.0)
+            .pool_timeout(30.0)
+            .connection_pool_size(8)
+            .get_updates_connect_timeout(30.0)
+            .get_updates_read_timeout(45.0)   # > run_polling timeout (30)
+            .get_updates_write_timeout(30.0)
+            .get_updates_pool_timeout(30.0)
+            .post_init(self._post_init)
+            .build()
+        )
 
         # Map each command name to a CommandService method.
         command_map: dict[str, Callable[[], str]] = {
@@ -167,6 +186,14 @@ class ICSBot:
         from apscheduler.triggers.cron import CronTrigger
 
         from app.utils.time import KSA, parse_hhmm
+
+        # On a reconnect/restart a stale scheduler may still exist — retire it.
+        if self._scheduler is not None:
+            try:
+                if self._scheduler.running:
+                    self._scheduler.shutdown(wait=False)
+            except Exception:
+                pass
 
         hh, mm = parse_hhmm(self.config.telegram.daily_report_time_ksa)
         weekday = self.config.telegram.weekly_report_day.lower()[:3]
@@ -320,9 +347,40 @@ class ICSBot:
         log.exception("Unhandled bot error: %s", context.error)
 
     def run(self):
-        """Start long-polling. Blocks until interrupted."""
+        """Start long-polling under a supervisor that auto-reconnects.
+
+        python-telegram-bot already retries transient network errors during
+        polling (it does not stop), and ``bootstrap_retries=-1`` retries the
+        startup/connection forever. The outer supervisor loop is a final safety
+        net: if polling ever exits with an unexpected error, we rebuild on a
+        fresh event loop and resume — the process never dies on a network blip.
+        A clean stop (SIGTERM on a Render redeploy) exits the loop normally.
+        """
         if not self.allowed:
             log.warning("No allowed_user_ids configured — every request will be Unauthorized.")
-        app = self.build_application()
-        log.info("ICS Telegram bot starting (paper-only, %d authorized users).", len(self.allowed))
-        app.run_polling()
+
+        backoff = 5
+        while True:
+            try:
+                # Fresh event loop each (re)start so a previously-closed loop
+                # never blocks a reconnect.
+                asyncio.set_event_loop(asyncio.new_event_loop())
+                app = self.build_application()
+                log.info(
+                    "ICS Telegram bot starting (paper-only, %d authorized users).",
+                    len(self.allowed),
+                )
+                app.run_polling(
+                    poll_interval=1.0,
+                    timeout=30,             # long-poll seconds (< get_updates_read_timeout)
+                    bootstrap_retries=-1,   # retry startup/connection forever
+                    drop_pending_updates=True,
+                )
+                log.info("Bot polling stopped cleanly; exiting supervisor.")
+                break
+            except Exception:
+                log.exception(
+                    "Bot polling crashed (network error?); reconnecting in %ds...", backoff
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)  # exponential backoff, capped at 60s
