@@ -10,6 +10,7 @@ does not require it at import time.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Callable, List
 
 from app.config import Config
@@ -17,6 +18,10 @@ from app.logging_config import get_logger
 from app.telegram.commands import CommandService
 
 log = get_logger(__name__)
+
+
+def _now_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 class ICSBot:
@@ -54,6 +59,7 @@ class ICSBot:
             "start": self.service.start,
             "commands": self.service.commands,
             "menu": self.service.commands,
+            "health": self.service.health,
             "status": self.service.status,
             "portfolio": self.service.portfolio,
             "positions": self.service.positions,
@@ -117,6 +123,7 @@ class ICSBot:
                 BotCommand("start", "ترحيب + تنبيه الأمان"),
                 BotCommand("commands", "عرض كل الأوامر"),
                 BotCommand("menu", "عرض كل الأوامر"),
+                BotCommand("health", "فحص صحة النظام"),
                 BotCommand("status", "حالة النظام"),
                 BotCommand("portfolio", "قيمة المحفظة والعائد"),
                 BotCommand("positions", "المراكز المفتوحة"),
@@ -132,14 +139,27 @@ class ICSBot:
                 BotCommand("resume", "إعادة تشغيل النظام"),
             ]
         )
-        log.info("Telegram command menu registered (%d commands).", 16)
+        log.info("Telegram command menu registered (%d commands).", 17)
+        self._set_config("bot_started_at", _now_str())
 
         # Start the in-process scheduler so the SAME worker also pushes the
         # daily/weekly reports automatically (no separate service needed).
         if self.config.telegram.enabled and self.allowed:
             self._start_scheduler()
         else:
+            self._set_config("scheduler_status", "غير مفعّل")
             log.warning("Scheduler not started (telegram disabled or no authorized users).")
+
+    def _set_config(self, key: str, value: str) -> None:
+        """Best-effort write of a runtime status flag (never raises into the loop)."""
+        from app.db.database import session_scope
+        from app.db.repositories import SystemConfigRepository
+
+        try:
+            with session_scope() as s:
+                SystemConfigRepository(s).set(key, value)
+        except Exception:
+            log.exception("Failed to record runtime status '%s'", key)
 
     # -- scheduled reports ------------------------------------------------ #
     def _start_scheduler(self) -> None:
@@ -151,6 +171,7 @@ class ICSBot:
         hh, mm = parse_hhmm(self.config.telegram.daily_report_time_ksa)
         weekday = self.config.telegram.weekly_report_day.lower()[:3]
         weekly_minute = (mm + 5) % 60
+        sh, sm = parse_hhmm(self.config.telegram.status_report_time_ksa)
 
         self._scheduler = AsyncIOScheduler(timezone=KSA)
         self._scheduler.add_job(
@@ -165,10 +186,18 @@ class ICSBot:
             id="weekly_report",
             replace_existing=True,
         )
+        # v1.1: short daily status / state-backup heartbeat.
+        self._scheduler.add_job(
+            self._run_status_job,
+            CronTrigger(hour=sh, minute=sm, timezone=KSA),
+            id="status_report",
+            replace_existing=True,
+        )
         self._scheduler.start()
+        self._set_config("scheduler_status", "🟢 فعّال (٣ مهام)")
         log.info(
-            "Report scheduler started: daily %02d:%02d KSA, weekly %s %02d:%02d KSA.",
-            hh, mm, weekday, hh, weekly_minute,
+            "Report scheduler started: daily %02d:%02d, weekly %s %02d:%02d, status %02d:%02d KSA.",
+            hh, mm, weekday, hh, weekly_minute, sh, sm,
         )
 
     async def _broadcast(self, text: str) -> None:
@@ -192,6 +221,7 @@ class ICSBot:
                 None, lambda: run_daily_workflow(self.config, send_report=False)
             )
             await self._broadcast(text)
+            self._set_config("last_daily_report_at", _now_str())
             log.info("Daily report sent to %d user(s).", len(self.allowed))
         except Exception:
             log.exception("Scheduled daily workflow failed")
@@ -222,6 +252,69 @@ class ICSBot:
         except Exception:
             log.warning("Could not fetch SPY weekly return; using 0.")
         return run_weekly_workflow(self.config, spy_weekly=spy_weekly, send_report=False)
+
+    async def _run_status_job(self) -> None:
+        """v1.1 daily heartbeat: short status report + lightweight state backup."""
+        import asyncio
+
+        log.info("Running scheduled STATUS/backup heartbeat...")
+        loop = asyncio.get_running_loop()
+        try:
+            text = await loop.run_in_executor(None, self._build_status_text)
+            await self._broadcast(text)
+            self._set_config("last_status_report_at", _now_str())
+            log.info("Status/backup heartbeat sent to %d user(s).", len(self.allowed))
+        except Exception:
+            log.exception("Scheduled status heartbeat failed")
+
+    def _build_status_text(self) -> str:
+        """Build the short status text and persist a state-backup checkpoint (sync)."""
+        import json
+
+        from sqlalchemy import func, select
+
+        from app.db import database
+        from app.db.database import session_scope
+        from app.db.models import AuditLog, Decision
+        from app.db.repositories import PositionRepository, SystemConfigRepository
+        from app.paper.portfolio import Portfolio
+
+        db_ok = database.ping()
+        with session_scope() as s:
+            pf = Portfolio(s, self.config.initial_capital)
+            total = float(pf.calculate_total_value())
+            cash = float(pf.calculate_cash())
+            open_positions = len(PositionRepository(s).open_positions())
+            n_dec = s.scalar(select(func.count()).select_from(Decision)) or 0
+            n_aud = s.scalar(select(func.count()).select_from(AuditLog)) or 0
+            # Lightweight state-backup checkpoint (no secrets, just paper state).
+            SystemConfigRepository(s).set(
+                "last_state_backup",
+                json.dumps(
+                    {
+                        "ts": _now_str(),
+                        "total_value": total,
+                        "cash": cash,
+                        "open_positions": open_positions,
+                        "decisions": n_dec,
+                        "audit_logs": n_aud,
+                    }
+                ),
+            )
+
+        inv = "✅" if n_dec == n_aud else "⚠️"
+        db_line = f"🟢 {database.dialect_name()}" if db_ok else "🔴 غير متصلة"
+        return "\n".join(
+            [
+                "🩺 ICS — تقرير حالة يومي مختصر",
+                f"الوضع: {self.config.mode}",
+                f"قاعدة البيانات: {db_line}",
+                f"المحفظة: ${total:,.2f} (نقد ${cash:,.2f})",
+                f"مراكز مفتوحة: {open_positions}",
+                f"قرارات/تدقيق: {n_dec}/{n_aud} {inv}",
+                "تداول ورقي فقط.",
+            ]
+        )
 
     async def _on_error(self, update, context):
         log.exception("Unhandled bot error: %s", context.error)

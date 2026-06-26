@@ -201,6 +201,45 @@ logged as a **rejected opportunity**. Target average DQS ≥ 75.
 
 ---
 
+## 4b. v1.1 — Stability & Persistence Upgrade
+
+**PostgreSQL support (SQLite stays the local default).**
+Set `DATABASE_URL` to a Postgres URL and ICS uses it; leave it as SQLite for
+local dev. The DB layer auto-normalises `postgres://` / `postgresql://` URLs to
+the psycopg driver, so a managed provider's URL works as-is. `init-db`
+(`create_all`) is idempotent — safe on an empty DB and a no-op on an existing one
+(it never wipes data on restart). **No trading/strategy/DQS logic changed.**
+
+```bash
+# Local (default): SQLite
+DATABASE_URL=sqlite:///./ics.db
+
+# Production: PostgreSQL (driver added automatically)
+DATABASE_URL=postgres://user:pass@host:5432/dbname
+```
+
+**`/health` command** — reports, with **no secrets ever** (only the dialect name):
+bot status, scheduler status, database connection, `paper_only` mode, kill-switch
+status, last decision-cycle time, last daily-report time, and the
+**decisions == audit_logs** invariant.
+
+**Daily status/backup heartbeat** — a short scheduled report (default `13:00`
+KSA, `telegram.status_report_time_ksa`) confirming health and persisting a
+lightweight state checkpoint (`last_state_backup` in `system_config`).
+
+### Setting up PostgreSQL on Render
+1. Render → **New → PostgreSQL** → create the database.
+2. Copy its **Internal Database URL** (same-account/region; no SSL needed).
+3. In the `ics-bot` worker → **Environment** → set
+   `DATABASE_URL` = that URL. (No other new variables.)
+4. The SQLite disk on `/var/data` is no longer required once on Postgres
+   (keeping it is harmless).
+5. Redeploy. On first boot `init-db` creates the schema in the empty Postgres;
+   subsequent restarts are no-ops. Managed Postgres also gives you provider-side
+   backups.
+
+---
+
 ## 5. Safety model
 
 - **No real broker integration anywhere.** The only execution path is

@@ -20,6 +20,21 @@ from app.db.models import Base
 
 _engine: Optional[Engine] = None
 _SessionFactory: Optional[sessionmaker] = None
+_engine_url: Optional[str] = None
+
+
+def normalize_database_url(url: str) -> str:
+    """Normalise a DATABASE_URL to a SQLAlchemy-compatible driver URL.
+
+    Managed Postgres providers (Render, Heroku, ...) hand out ``postgres://`` or
+    ``postgresql://`` URLs. SQLAlchemy 2.x needs an explicit driver, so we map
+    both to the psycopg (v3) driver. SQLite URLs are returned unchanged.
+    """
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://") :]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://") :]
+    return url
 
 
 def _json_default(obj: Any):
@@ -42,25 +57,50 @@ def init_engine(database_url: str = "sqlite:///./ics.db", echo: bool = False) ->
     workflow that calls ``init_engine`` again (e.g. the scheduled report job)
     never tears down a pool that a live command handler is using.
     """
-    global _engine, _SessionFactory
+    global _engine, _SessionFactory, _engine_url
 
-    if _engine is not None and str(_engine.url) == database_url:
+    url = normalize_database_url(database_url)
+    if _engine is not None and _engine_url == url:
         return _engine
+    if _engine is not None:
+        _engine.dispose()
 
-    connect_args = {}
-    if database_url.startswith("sqlite"):
-        # Allow use across threads (APScheduler / Telegram run in their own).
-        connect_args = {"check_same_thread": False}
+    is_sqlite = url.startswith("sqlite")
+    # SQLite: allow cross-thread use (APScheduler / Telegram run in their own).
+    connect_args = {"check_same_thread": False} if is_sqlite else {}
 
-    _engine = create_engine(
-        database_url,
+    engine_kwargs: dict = dict(
         echo=echo,
         future=True,
         connect_args=connect_args,
         json_serializer=_json_serializer,
+        pool_pre_ping=True,  # drop dead connections instead of erroring (stability)
     )
+    if not is_sqlite:
+        # Recycle Postgres connections before managed providers time them out.
+        engine_kwargs["pool_recycle"] = 1800
+
+    _engine = create_engine(url, **engine_kwargs)
     _SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
+    _engine_url = url
     return _engine
+
+
+def dialect_name() -> str:
+    """Return the active database dialect ('sqlite' / 'postgresql'). No secrets."""
+    return get_engine().dialect.name
+
+
+def ping() -> bool:
+    """Best-effort connectivity check used by /health."""
+    from sqlalchemy import text
+
+    try:
+        with get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
 
 
 def get_engine() -> Engine:

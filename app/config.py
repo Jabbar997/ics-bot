@@ -97,6 +97,8 @@ class TelegramConfig(BaseModel):
     allowed_user_ids: List[int] = Field(default_factory=list)
     daily_report_time_ksa: str = "01:15"
     weekly_report_day: str = "FRI"
+    # v1.1: short daily status/backup heartbeat time (KSA).
+    status_report_time_ksa: str = "13:00"
 
 
 class Config(BaseModel):

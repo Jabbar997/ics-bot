@@ -8,6 +8,9 @@ python-dateutil>=2.8
 
 # --- Persistence ---
 SQLAlchemy>=2.0
+# PostgreSQL driver (v1.1). SQLite remains the default for local dev; set
+# DATABASE_URL to a postgresql:// URL to use Postgres instead.
+psycopg[binary]>=3.1
 
 # --- Config ---
 pydantic>=2.5

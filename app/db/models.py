@@ -28,7 +28,9 @@ def _uuid() -> str:
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    # Naive UTC: stored consistently so the same models work on both SQLite and
+    # Postgres (TIMESTAMP WITHOUT TIME ZONE). Values remain UTC, just tz-naive.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):

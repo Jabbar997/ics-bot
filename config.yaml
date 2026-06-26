@@ -34,6 +34,7 @@ telegram:
   allowed_user_ids: []
   daily_report_time_ksa: "01:15"
   weekly_report_day: "FRI"
+  status_report_time_ksa: "13:00"
 
 watchlist:
   - SPY

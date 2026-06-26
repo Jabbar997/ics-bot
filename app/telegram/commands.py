@@ -159,6 +159,52 @@ class CommandService:
     def performance(self) -> str:
         return self.weekly()
 
+    def health(self) -> str:
+        """v1.1 health check. Never includes the DB URL or any secret."""
+        from sqlalchemy import func, select
+
+        from app.db import database
+        from app.db.models import AuditLog, Decision
+        from app.db.repositories import SystemConfigRepository
+
+        db_ok = database.ping()
+        db_line = f"🟢 متصلة ({database.dialect_name()})" if db_ok else "🔴 غير متصلة"
+
+        with session_scope() as s:
+            cfg = SystemConfigRepository(s)
+            scheduler = cfg.get("scheduler_status", "غير معروف")
+            bot_started = cfg.get("bot_started_at", "—")
+            last_cycle = cfg.get("last_decision_cycle_at", "لم تُشغّل بعد")
+            last_daily = cfg.get("last_daily_report_at", "لم يُرسل بعد")
+            n_dec = s.scalar(select(func.count()).select_from(Decision)) or 0
+            n_aud = s.scalar(select(func.count()).select_from(AuditLog)) or 0
+            ks = KillSwitchManager(s)
+            level = ks.active_level()
+            frozen = ks.is_frozen()
+
+        invariant = "✅ متطابق" if n_dec == n_aud else "⚠️ غير متطابق"
+        ks_line = f"المستوى {level.value}" if level.value else "غير مفعّل"
+        if frozen:
+            ks_line += " (مُجمّد)"
+
+        return "\n".join(
+            [
+                "🩺 فحص صحة ICS",
+                "",
+                "البوت: 🟢 يعمل",
+                f"المجدول: {scheduler}",
+                f"قاعدة البيانات: {db_line}",
+                f"الوضع: {self.config.mode} ✅",
+                f"مفتاح الإيقاف: {ks_line}",
+                "",
+                f"آخر دورة قرار: {last_cycle}",
+                f"آخر تقرير يومي: {last_daily}",
+                f"بدء البوت: {bot_started}",
+                "",
+                f"تطابق السجلات (قرارات=تدقيق): {invariant} ({n_dec}={n_aud})",
+            ]
+        )
+
     # -- control commands ------------------------------------------------- #
     def stop(self) -> str:
         with session_scope() as s:

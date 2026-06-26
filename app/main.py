@@ -17,7 +17,7 @@ Execution conventions:
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -29,6 +29,7 @@ from app.db.repositories import (
     PortfolioSnapshotRepository,
     PositionRepository,
     RegimeRepository,
+    SystemConfigRepository,
     WatchlistRepository,
 )
 from app.decision.decision_engine import DecisionEngine
@@ -204,6 +205,12 @@ def run_daily_workflow(
 
         # 11-12. Mark to market + snapshot.
         broker.update_portfolio_snapshot(latest_prices)
+
+        # v1.1: record the decision-cycle timestamp for /health.
+        SystemConfigRepository(s).set(
+            "last_decision_cycle_at",
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        )
 
     # 14. Daily report.
     from app.telegram.commands import CommandService
