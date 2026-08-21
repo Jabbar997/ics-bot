@@ -118,18 +118,33 @@ def format_daily_report(
     )
 
 
-def format_weekly_report(perf: PerformanceResult, spy_weekly: float, rule_violations: int = 0) -> str:
+def format_weekly_report(
+    perf: PerformanceResult,
+    spy_weekly: float,
+    risk_blocks: int = 0,
+    actual_violations: int = 0,
+) -> str:
+    """Weekly report.
+
+    v1.2: ``العائد الأسبوعي`` is the return over the week only
+    (``period_return``); the cumulative figure since inception is shown
+    separately. ``risk_blocks`` counts orders the risk manager *prevented* —
+    that is the system enforcing its rules, NOT rules being broken.
+    """
     return "\n".join(
         [
             "📈 تقرير ICS الأسبوعي",
             "",
-            "المحفظة الافتتاحية:",
+            "المحفظة الافتتاحية (بداية الأسبوع):",
             money_str(perf.starting_value),
             "",
             "المحفظة الختامية:",
             money_str(perf.ending_value),
             "",
             "العائد الأسبوعي:",
+            pct_str(perf.period_return),
+            "",
+            "العائد التراكمي (منذ الانطلاق):",
             pct_str(perf.total_return),
             "",
             "SPY الأسبوعي:",
@@ -155,8 +170,11 @@ def format_weekly_report(perf: PerformanceResult, spy_weekly: float, rule_violat
             "أسوأ قرار:",
             perf.worst_decision or "-",
             "",
-            "مخالفات القواعد:",
-            str(rule_violations),
+            "قرارات أوقفها مدير المخاطر:",
+            f"{risk_blocks} (النظام طبّق قواعده)",
+            "",
+            "مخالفات فعلية للقواعد:",
+            f"{actual_violations} ✅" if actual_violations == 0 else f"{actual_violations} ⚠️",
             "",
             "التوصية:",
             perf.recommendation or "استمر في التداول الورقي. لا ترقية بعد.",

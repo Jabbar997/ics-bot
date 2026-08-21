@@ -240,6 +240,28 @@ lightweight state checkpoint (`last_state_backup` in `system_config`).
 
 ---
 
+## 4c. v1.2 — Reporting Correctness
+
+Three defects surfaced by 56 days of live paper trading, plus a stale-data fix.
+**No trading, strategy, or DQS logic was changed.**
+
+| Fix | Before | After |
+|---|---|---|
+| **Weekly return** | aggregated *all* history and labelled it "weekly" | `period_return` covers the last 7 days; cumulative shown on its own line |
+| **Benchmark in `/weekly`** | manual command always printed SPY `+0.00%` (only the scheduled job computed it) | computed on demand, with a safe `0.0` fallback if the fetch fails |
+| **"Rule violations"** | counted risk-manager *blocks* — i.e. rules being **enforced** — under an alarming label | `قرارات أوقفها مدير المخاطر` (blocks) + `مخالفات فعلية: 0` |
+| **Weekend/stale bars** | re-ran the cycle on repeated Friday data (~28% of runs), inflating rejects | cycle skips when the benchmark's latest bar was already processed; `--force` overrides |
+
+Command handlers now run off the event loop, so a command that touches the
+network can no longer stall polling.
+
+```bash
+python -m app.main daily           # skips if no new market bar
+python -m app.main daily --force   # run anyway
+```
+
+---
+
 ## 5. Safety model
 
 - **No real broker integration anywhere.** The only execution path is

@@ -99,8 +99,15 @@ def run_daily_workflow(
     config: Config,
     data: Optional[Dict[str, pd.DataFrame]] = None,
     send_report: bool = False,
+    force: bool = False,
 ) -> str:
-    """Run one daily paper-trading cycle. Returns the daily report text."""
+    """Run one daily paper-trading cycle. Returns the daily report text.
+
+    v1.2: if the benchmark's latest bar is the same one already processed
+    (weekends / holidays / a second run on the same day), the decision cycle is
+    skipped so stale data does not create duplicate decisions and snapshots.
+    Pass ``force=True`` to run anyway.
+    """
     database.init_engine(config.env.database_url)
     database.create_all()
 
@@ -127,6 +134,20 @@ def run_daily_workflow(
 
     spy_feat = features[benchmark]
     spy_today_pct = float(spy_feat["close"].pct_change().iloc[-1]) if len(spy_feat) > 1 else 0.0
+
+    # v1.2: skip the cycle when the market has produced no new bar since the
+    # last run (weekend / holiday / repeat run) unless explicitly forced.
+    latest_bar = str(pd.Timestamp(spy_feat.index[-1]).date())
+    with database.session_scope() as s:
+        already_processed = SystemConfigRepository(s).get("last_processed_bar_date")
+    if already_processed == latest_bar and not force:
+        log.info(
+            "No new market bar since %s — skipping decision cycle (stale data).",
+            latest_bar,
+        )
+        from app.telegram.commands import CommandService
+
+        return CommandService(config).today(spy_today_pct=spy_today_pct)
 
     with database.session_scope() as s:
         # 4. Regime.
@@ -207,10 +228,13 @@ def run_daily_workflow(
         broker.update_portfolio_snapshot(latest_prices)
 
         # v1.1: record the decision-cycle timestamp for /health.
-        SystemConfigRepository(s).set(
+        cfg_repo = SystemConfigRepository(s)
+        cfg_repo.set(
             "last_decision_cycle_at",
             datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         )
+        # v1.2: remember which market bar this cycle consumed.
+        cfg_repo.set("last_processed_bar_date", latest_bar)
 
     # 14. Daily report.
     from app.telegram.commands import CommandService
@@ -341,6 +365,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", default=None, help="Path to config.yaml")
     p.add_argument("--send", action="store_true", help="Send report to Telegram")
     p.add_argument("--period", default=None, help="Backtest history period, e.g. 5y")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Run the daily cycle even if no new market bar is available",
+    )
     return p
 
 
@@ -352,7 +381,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "init-db":
         init_db(config)
     elif args.command == "daily":
-        run_daily_workflow(config, send_report=args.send)
+        run_daily_workflow(config, send_report=args.send, force=args.force)
     elif args.command == "weekly":
         run_weekly_workflow(config, send_report=args.send)
     elif args.command == "backtest":

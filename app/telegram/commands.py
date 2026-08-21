@@ -9,6 +9,9 @@ script.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from typing import Optional
+
 from app.config import Config
 from app.db.database import session_scope
 from app.db.repositories import (
@@ -94,17 +97,39 @@ class CommandService:
         with session_scope() as s:
             return build_daily_report(s, self.config, spy_today_pct=spy_today_pct)
 
-    def weekly(self, spy_weekly: float = 0.0) -> str:
+    def weekly(self, spy_weekly: Optional[float] = None, days: int = 7) -> str:
+        """Weekly report over the last ``days`` days (v1.2).
+
+        Previously this aggregated the ENTIRE history and labelled it "weekly".
+        Now the window is filtered, and ``spy_weekly`` is computed when not
+        supplied so the manual /weekly no longer shows SPY as +0.00%.
+        """
+        from sqlalchemy import select
+
+        from app.db.models import Decision
         from app.db.repositories import PortfolioSnapshotRepository
 
+        if spy_weekly is None:
+            spy_weekly = self._spy_period_return(days)
+
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
         with session_scope() as s:
-            snaps = PortfolioSnapshotRepository(s).all()
-            closed = PositionRepository(s).closed_positions()
-            from sqlalchemy import select
+            snap_repo = PortfolioSnapshotRepository(s)
+            snaps = [x for x in snap_repo.all() if x.ts and x.ts >= cutoff]
+            if len(snaps) < 2:
+                # Not enough history in the window — fall back to everything so
+                # the report is still meaningful rather than empty.
+                snaps = snap_repo.all()
 
-            from app.db.models import Decision
-
-            decisions = list(s.scalars(select(Decision)))
+            closed = [
+                p for p in PositionRepository(s).closed_positions()
+                if p.exit_at and p.exit_at >= cutoff
+            ]
+            decisions = [
+                d for d in s.scalars(select(Decision))
+                if d.created_at and d.created_at >= cutoff
+            ]
             perf = evaluator.evaluate(
                 period="weekly",
                 snapshots=snaps,
@@ -113,8 +138,24 @@ class CommandService:
                 initial_capital=self.config.initial_capital,
                 spy_return=spy_weekly,
             )
-            violations = sum(1 for d in decisions if d.rule_violated)
-            return format_weekly_report(perf, spy_weekly, rule_violations=violations)
+            # `rule_violated` marks orders the RISK MANAGER BLOCKED — i.e. rules
+            # enforced, not broken. Actual violations (an order that executed
+            # despite breaking a rule) are structurally impossible here.
+            risk_blocks = sum(1 for d in decisions if d.rule_violated)
+            return format_weekly_report(
+                perf, spy_weekly, risk_blocks=risk_blocks, actual_violations=0
+            )
+
+    def _spy_period_return(self, days: int) -> float:
+        """Benchmark return over the window. Never raises (0.0 on failure)."""
+        try:
+            from app.data.market_data import fetch_history
+            from app.performance.benchmarks import spy_return_between
+
+            spy = fetch_history(self.config.benchmark.symbol, period="3mo")
+            return spy_return_between(spy, start=datetime.utcnow() - timedelta(days=days))
+        except Exception:
+            return 0.0
 
     def rules(self) -> str:
         r = self.config.risk

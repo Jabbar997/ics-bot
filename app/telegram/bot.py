@@ -110,7 +110,9 @@ class ICSBot:
                 await update.message.reply_text("⛔ غير مصرّح لك باستخدام هذا البوت.")
                 return
             try:
-                text = fn()
+                # Commands may hit the network/DB — run off the event loop so
+                # polling and other commands stay responsive.
+                text = await asyncio.get_running_loop().run_in_executor(None, fn)
             except Exception:  # never leak internals to the user
                 log.exception("Command failed for user %s", user_id)
                 text = "حدث خطأ داخلي. يُرجى مراجعة سجلّات الخادم."
@@ -180,6 +182,17 @@ class ICSBot:
         except Exception:
             log.exception("Failed to record runtime status '%s'", key)
 
+    def _get_config(self, key: str, default=None):
+        """Best-effort read of a runtime status flag."""
+        from app.db.database import session_scope
+        from app.db.repositories import SystemConfigRepository
+
+        try:
+            with session_scope() as s:
+                return SystemConfigRepository(s).get(key, default)
+        except Exception:
+            return default
+
     # -- scheduled reports ------------------------------------------------ #
     def _start_scheduler(self) -> None:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -242,11 +255,17 @@ class ICSBot:
         log.info("Running scheduled DAILY workflow...")
         loop = asyncio.get_running_loop()
         try:
+            before = self._get_config("last_decision_cycle_at")
             # Blocking (network + DB) work runs in a thread so the bot keeps
             # answering commands; the workflow itself does not send (we broadcast).
             text = await loop.run_in_executor(
                 None, lambda: run_daily_workflow(self.config, send_report=False)
             )
+            # v1.2: on weekends/holidays the cycle is skipped (no new bar) — do
+            # not spam an identical report.
+            if self._get_config("last_decision_cycle_at") == before:
+                log.info("No new market bar — daily report not re-sent.")
+                return
             await self._broadcast(text)
             self._set_config("last_daily_report_at", _now_str())
             log.info("Daily report sent to %d user(s).", len(self.allowed))

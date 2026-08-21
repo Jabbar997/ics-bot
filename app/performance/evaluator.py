@@ -21,7 +21,8 @@ class PerformanceResult:
     period_end: Optional[datetime] = None
     starting_value: float = 0.0
     ending_value: float = 0.0
-    total_return: float = 0.0
+    total_return: float = 0.0    # cumulative vs initial capital (since inception)
+    period_return: float = 0.0   # v1.2: return over THIS period only (start → end)
     invested_return: float = 0.0
     spy_return: float = 0.0
     sharpe_ratio: float = 0.0
@@ -45,6 +46,7 @@ class PerformanceResult:
             "starting_value": self.starting_value,
             "ending_value": self.ending_value,
             "total_return": self.total_return,
+            "period_return": self.period_return,
             "invested_return": self.invested_return,
             "spy_return": self.spy_return,
             "sharpe_ratio": self.sharpe_ratio,
@@ -122,6 +124,10 @@ def evaluate(
     res.starting_value = equity[0] if equity else initial_capital
     res.ending_value = equity[-1] if equity else initial_capital
     res.total_return = (res.ending_value / initial_capital - 1.0) if initial_capital else 0.0
+    # v1.2: return over this period only (e.g. the week), not since inception.
+    res.period_return = (
+        (res.ending_value / res.starting_value - 1.0) if res.starting_value else 0.0
+    )
 
     daily_returns = [float(s.daily_pnl_pct) for s in snapshots if s.daily_pnl_pct is not None]
     res.sharpe_ratio = round(sharpe_ratio(daily_returns), 4)
