@@ -118,7 +118,16 @@ back through the ceiling. Caught by
 components that still have headroom in the required direction, repeating until
 absorbed. Keeps the sum at exactly 100 *and* every weight inside [5, 40].
 
-### D-10 · Outcomes recorded by the weekly loop, not inside `paper/broker.py`
+### D-10 (APPROVED) · Outcomes recorded by the weekly loop, not inside `paper/broker.py`
+**Status:** raised as a deviation, **explicitly approved** in ICS-DOC-004 on
+2026-08-22 ("توضيح معتمد (D-10)"). The roadmap now states that MFE/MAE are
+computed **inside the weekly task**, that `close_position()` stays deterministic
+and offline-testable, and that the non-negotiable requirement is only *no
+outcome field may be computed or estimated before the position actually closes* —
+not where the code lives. The implementation already satisfies this; **no code
+change required**.
+
+Original rationale, retained:
 ICS-DOC-004 §0.1 says the outcome fields are filled "عند إغلاق الصفقة فعلياً في
 `paper/broker.py`". The functional requirement — *only on a real close, never an
 advance estimate* — is met: `record_outcomes()` creates a `DecisionOutcome` only
