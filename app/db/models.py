@@ -313,6 +313,59 @@ class DecisionOutcome(Base):
     dqs_components_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
+class ShadowPrediction(Base):
+    """ICS-DOC-004 Phase 1 — shadow-mode ML prediction.
+
+    Written alongside a decision but with **zero influence on it**. Kept in its
+    own table precisely so that a bug here can never reach the live pipeline.
+    ``model_version`` + the training window make every prediction traceable to
+    the exact model that produced it.
+    """
+
+    __tablename__ = "shadow_predictions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    decision_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("decisions.id"), index=True, nullable=True
+    )
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    as_of: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True, nullable=True)
+
+    model_version: Mapped[str] = mapped_column(String(60), index=True)
+    train_start: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    train_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    horizon_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    predicted_return: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)
+    ml_confidence: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 0..100, shadow
+    dqs_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    dqs_plus_ml_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # hypothetical
+
+    realized_return: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)  # filled later
+    features_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+
+class ModelTrainingRun(Base):
+    """One monthly walk-forward training cycle, with its optuna trial log."""
+
+    __tablename__ = "model_training_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    model_version: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    train_start: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    train_end: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    horizon_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    n_samples: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    n_trials: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    best_params_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    best_score: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)
+    # Mandatory per the Phase 1 amendment: every optuna trial is logged.
+    trials_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 class LearningEvent(Base):
     """Immutable record of one feedback-loop cycle.
 

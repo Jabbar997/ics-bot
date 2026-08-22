@@ -31,6 +31,15 @@ APScheduler>=3.10
 # Pinned exactly per the ICS-DOC-004 execution rule (no open >= for phase libs).
 scipy==1.17.1
 
+# --- Machine learning (ICS-DOC-004 Phase 1) ---
+# LightGBM: CPU-only gradient boosting, light enough for the current Render worker.
+# optuna: bounded Bayesian tuning, hard cap of 100 trials per monthly cycle.
+# All pinned exactly; shadow mode only until the DSR / 3-window gate is passed.
+lightgbm==4.7.0
+scikit-learn==1.9.0
+joblib==1.5.3
+optuna==4.9.0
+
 # --- Testing ---
 pytest>=7.4
 
