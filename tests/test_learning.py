@@ -16,7 +16,7 @@ from app.db.database import session_scope
 from app.db.models import DecisionOutcome, LearningEvent
 from app.decision.dqs import COMPONENT_NAMES, DEFAULT_WEIGHTS, normalize_weights
 from app.learning.feedback_loop import (
-    MAX_SHIFT_PCT,
+    MAX_SHIFT_POINTS,
     MIN_CLOSED_TRADES,
     compute_correlations,
     propose_weights,
@@ -90,7 +90,8 @@ def test_positive_correlation_increases_that_weight():
     assert after["risk_management"] < before["risk_management"]
 
 
-def test_shift_never_exceeds_the_five_percent_cap():
+def test_shift_never_exceeds_five_absolute_points():
+    """ICS-DOC-004: the cap is +/-5 POINTS, not +/-5% of the component's weight."""
     before = dict(DEFAULT_WEIGHTS)
     # Extreme, contradictory correlations must still respect the cap.
     corrs = {
@@ -100,10 +101,27 @@ def test_shift_never_exceeds_the_five_percent_cap():
         "market_regime_strength": -1.0,
         "reason_clarity": 1.0,
     }
-    after = propose_weights(before, corrs, max_shift_pct=MAX_SHIFT_PCT)
+    after = propose_weights(before, corrs, max_shift_points=MAX_SHIFT_POINTS)
     for name in COMPONENT_NAMES:
-        rel = abs(after[name] - before[name]) / before[name] * 100.0
-        assert rel <= MAX_SHIFT_PCT + 1e-6, f"{name} moved {rel:.3f}% > {MAX_SHIFT_PCT}%"
+        moved = abs(after[name] - before[name])
+        assert moved <= MAX_SHIFT_POINTS + 1e-6, f"{name} moved {moved:.3f} pts > {MAX_SHIFT_POINTS}"
+
+
+def test_cap_is_absolute_points_not_relative_percent():
+    """The doc's own example: 25 may reach 30 in one cycle (not 26.25)."""
+    before = dict(DEFAULT_WEIGHTS)  # strategy_alignment = 25
+    # Only strategy_alignment predicts returns -> it takes the full +5 points.
+    after = propose_weights(
+        before,
+        {"strategy_alignment": 1.0, "risk_management": -1.0, "timing_quality": -1.0,
+         "market_regime_strength": -1.0, "reason_clarity": -1.0},
+    )
+    gained = after["strategy_alignment"] - before["strategy_alignment"]
+    assert gained == pytest.approx(MAX_SHIFT_POINTS)          # +5.0 points
+    assert after["strategy_alignment"] == pytest.approx(30.0)  # 25 -> 30
+    # The relative reading would have produced only 26.25.
+    assert after["strategy_alignment"] > 26.25
+    assert sum(after.values()) == pytest.approx(100.0)
 
 
 def test_weights_always_sum_to_one_hundred():

@@ -7,8 +7,9 @@ What it does, once a week:
 3. For each DQS component, measure the Spearman rank correlation between the
    points that component contributed at entry and the realised return.
 4. Nudge each weight toward the components that actually predicted returns,
-   capped at ``MAX_SHIFT_PCT`` **relative** change per component per cycle.
-5. Re-normalise so the weights still sum to exactly 100, and persist.
+   capped at ``MAX_SHIFT_POINTS`` **absolute percentage points** per component
+   per cycle (ICS-DOC-004: 25 may move within 20..30, not 25 +/- 1.25).
+5. The move is zero-sum, so the weights still sum to exactly 100; then persist.
 6. Write a :class:`LearningEvent` — always, including on a skipped cycle.
 
 Safety: this loop only re-balances how candidates are *scored*. It cannot place,
@@ -29,11 +30,18 @@ from app.logging_config import get_logger
 
 log = get_logger(__name__)
 
-# --- Phase 0 bounds --------------------------------------------------------- #
+# --- Phase 0 bounds (ICS-DOC-004) ------------------------------------------- #
 MIN_CLOSED_TRADES = 30      # gate: fewer closed trades than this changes nothing
-MAX_SHIFT_PCT = 5.0         # cap: max RELATIVE change per component per cycle
+# ICS-DOC-004 is explicit: the cap is +/-5 ABSOLUTE PERCENTAGE POINTS per
+# component per weekly cycle — e.g. strategy_alignment at 25 may move within
+# 20..30 in one cycle — NOT +/-5% of the component's own weight (25 +/- 1.25).
+MAX_SHIFT_POINTS = 5.0
 MIN_COMPONENT_WEIGHT = 5.0  # no component may be starved below this
 MAX_COMPONENT_WEIGHT = 40.0 # ...nor dominate above this
+
+# Backwards-compatible alias (the old name meant a relative cap; kept only so
+# external callers do not break — prefer MAX_SHIFT_POINTS).
+MAX_SHIFT_PCT = MAX_SHIFT_POINTS
 
 
 @dataclass
@@ -88,54 +96,71 @@ def compute_correlations(outcomes) -> Dict[str, Optional[float]]:
 def propose_weights(
     current: Dict[str, float],
     correlations: Dict[str, Optional[float]],
-    max_shift_pct: float = MAX_SHIFT_PCT,
+    max_shift_points: float = MAX_SHIFT_POINTS,
 ) -> Dict[str, float]:
-    """Bounded, zero-sum re-balance of the weights.
+    """Bounded, zero-sum re-balance of the weights (ICS-DOC-004 Phase 0).
 
     A component whose contribution correlated positively with realised return
     gains weight; a negatively-correlated one loses weight.
 
-    The move is constructed to be **zero-sum**: signals are centred on the
-    weight-weighted mean correlation, so the deltas cancel out and the total
-    stays at exactly 100 with no re-normalisation. That matters because
-    re-normalising *after* capping would silently push a component past its cap.
-    Each delta is then at most ``max_shift_pct`` percent of that component's own
-    current weight.
+    The move is **zero-sum in absolute points**: signals are centred on the plain
+    mean correlation so the deltas cancel exactly, and the total stays at 100
+    without re-normalisation. Re-normalising *after* capping would silently push
+    a component past its cap, so it is avoided.
 
-    An undefined correlation (constant or missing data) is treated as neutral
+    Each delta is at most ``max_shift_points`` **absolute percentage points**
+    (ICS-DOC-004: 25 may move within 20..30, not 25 +/- 1.25).
+
+    An undefined correlation (constant or missing data) counts as neutral
     evidence (0.0) rather than being frozen, so a single informative component
     can still be rewarded relative to the uninformative ones.
     """
     weights = {name: float(current.get(name, 0.0)) for name in COMPONENT_NAMES}
-    total_w = sum(weights.values())
-    if total_w <= 0:
+    if sum(weights.values()) <= 0:
         return normalize_weights(current)
 
     rhos = {name: (0.0 if correlations.get(name) is None else float(correlations[name]))
             for name in COMPONENT_NAMES}
 
-    # Weight-weighted mean => sum(w_i * (rho_i - mean)) == 0.
-    mean_rho = sum(weights[n] * rhos[n] for n in COMPONENT_NAMES) / total_w
+    # Plain mean => sum(rho_i - mean) == 0, so the absolute deltas cancel.
+    mean_rho = sum(rhos.values()) / len(COMPONENT_NAMES)
     signals = {n: rhos[n] - mean_rho for n in COMPONENT_NAMES}
 
-    # Scale into [-1, 1] (a constant factor preserves the zero-sum property).
+    # Scale into [-1, 1]; a constant factor preserves the zero-sum property.
     peak = max(abs(v) for v in signals.values())
     if peak <= 1e-12:
         return normalize_weights(weights)  # no differential signal at all
     signals = {n: v / peak for n, v in signals.items()}
 
-    proposed = {
-        n: weights[n] * (1.0 + (max_shift_pct / 100.0) * signals[n]) for n in COMPONENT_NAMES
-    }
+    proposed = {n: weights[n] + max_shift_points * signals[n] for n in COMPONENT_NAMES}
+    return _project_to_bounds(proposed)
 
-    # Safety floor/ceiling wins over gradualism; it only binds in extremes, and
-    # normalize_weights keeps the sum at 100 if clamping ever does bind.
-    clamped = {
-        n: max(MIN_COMPONENT_WEIGHT, min(MAX_COMPONENT_WEIGHT, v)) for n, v in proposed.items()
-    }
-    if any(abs(clamped[n] - proposed[n]) > 1e-12 for n in COMPONENT_NAMES):
-        return normalize_weights(clamped)
-    return clamped
+
+def _project_to_bounds(weights: Dict[str, float]) -> Dict[str, float]:
+    """Clamp to [floor, ceiling] while keeping the total at exactly 100.
+
+    Plain re-normalisation cannot be used here: scaling a clamped set back up to
+    100 pushes components straight back through the ceiling (e.g. one at 40 and
+    four at 5 sum to 60, and scaling by 100/60 sends the first to 66.7). Instead
+    the residual is handed only to components that still have headroom in the
+    required direction, repeated until it is absorbed.
+    """
+    w = {n: float(weights.get(n, 0.0)) for n in COMPONENT_NAMES}
+    for _ in range(50):
+        w = {n: max(MIN_COMPONENT_WEIGHT, min(MAX_COMPONENT_WEIGHT, v)) for n, v in w.items()}
+        residual = TOTAL_WEIGHT - sum(w.values())
+        if abs(residual) < 1e-9:
+            return w
+        if residual > 0:
+            free = [n for n, v in w.items() if v < MAX_COMPONENT_WEIGHT - 1e-12]
+        else:
+            free = [n for n, v in w.items() if v > MIN_COMPONENT_WEIGHT + 1e-12]
+        if not free:  # unreachable: 5*5=25 <= 100 <= 5*40=200
+            return w
+        share = residual / len(free)
+        for n in free:
+            w[n] += share
+    return w
 
 
 def _record_event(
@@ -148,7 +173,7 @@ def _record_event(
     correlations: Dict[str, Optional[float]],
     before: Dict[str, float],
     after: Dict[str, float],
-    max_shift_pct: float,
+    max_shift_pct: float,  # NOTE: stores POINTS; column name kept for schema stability
 ) -> LearningEvent:
     """Immutable record of the cycle — written even when nothing changed."""
     event = LearningEvent(
@@ -177,7 +202,7 @@ def run_feedback_cycle(
     session,
     *,
     min_trades: int = MIN_CLOSED_TRADES,
-    max_shift_pct: float = MAX_SHIFT_PCT,
+    max_shift_points: float = MAX_SHIFT_POINTS,
     price_provider=None,
 ) -> FeedbackResult:
     """Run one weekly cycle. Always writes exactly one LearningEvent."""
@@ -190,7 +215,7 @@ def run_feedback_cycle(
         reason = f"عدد الصفقات المغلقة {n} < الحد الأدنى {min_trades}؛ لا تعديل."
         _record_event(
             session, event_type="skipped", applied=False, trades=n, reason=reason,
-            correlations={}, before=before, after=before, max_shift_pct=max_shift_pct,
+            correlations={}, before=before, after=before, max_shift_pct=max_shift_points,
         )
         log.info("Feedback cycle skipped: %s", reason)
         return FeedbackResult(False, reason, n, {}, before, before)
@@ -200,16 +225,16 @@ def run_feedback_cycle(
         reason = "تعذّر حساب أي ارتباط (بيانات ثابتة أو ناقصة)؛ لا تعديل."
         _record_event(
             session, event_type="skipped", applied=False, trades=n, reason=reason,
-            correlations=correlations, before=before, after=before, max_shift_pct=max_shift_pct,
+            correlations=correlations, before=before, after=before, max_shift_pct=max_shift_points,
         )
         return FeedbackResult(False, reason, n, correlations, before, before)
 
-    after = propose_weights(before, correlations, max_shift_pct=max_shift_pct)
+    after = propose_weights(before, correlations, max_shift_points=max_shift_points)
     save_weights(session, after)
-    reason = f"أُعيد توازن الأوزان من {n} صفقة مغلقة (سقف {max_shift_pct}% لكل مكوّن)."
+    reason = f"أُعيد توازن الأوزان من {n} صفقة مغلقة (سقف {max_shift_points} نقطة لكل مكوّن)."
     _record_event(
         session, event_type="weight_update", applied=True, trades=n, reason=reason,
-        correlations=correlations, before=before, after=after, max_shift_pct=max_shift_pct,
+        correlations=correlations, before=before, after=after, max_shift_pct=max_shift_points,
     )
     log.info("Feedback cycle applied: %s", reason)
     return FeedbackResult(True, reason, n, correlations, before, after)

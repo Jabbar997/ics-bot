@@ -8,28 +8,25 @@ governing document was ambiguous or unavailable. Newest section last.
 
 ---
 
-## ⚠️ OPEN GAP — ICS-DOC-004 is not in the repository
+## ✅ RESOLVED — ICS-DOC-004 supplied
 
-**Date:** 2026-08-22 · **Status:** open · **Blocks:** formal phase sign-off
+**Raised:** 2026-08-22 · **Resolved:** 2026-08-22
 
-The execution order references `ICS-DOC-004` as the governing roadmap, but the
-document is **not present in the repository and was never supplied in full**.
-`grep -r "ICS-DOC-004"` returns nothing, and there is no
-`ICS-DOC-004-learning-intelligence-roadmap.md`.
+Phase 0 was implemented before the governing document was available (it was not
+in the repo and `grep -r "ICS-DOC-004"` returned nothing). The work items were
+taken from the execution order itself; two things could not be: the exact Phase 0
+success gate, and the documented baseline.
 
-Phase 0 was still implementable because the execution order itself specified the
-work items exactly (DecisionOutcome fields, 30-trade gate, ±5% cap, sum = 100,
-LearningEvent, `/learning`, scipy/Spearman). Two things could **not** be taken
-from the document:
+The document has since been supplied and is now committed as
+`ICS-DOC-004-learning-intelligence-roadmap.md`, with the Phase 1 statistical
+amendment folded into it. Reviewing the implementation against it surfaced one
+real conflict — see **D-04 (CORRECTED)** below.
 
-| Needed from ICS-DOC-004 | What was done instead |
-|---|---|
-| The exact Phase 0 success gate | Applied the generic acceptance gate from the execution order (all tests pass, `paper_only` unchanged, numeric comparison vs baseline, docs updated). |
-| The documented baseline | Supplied later by the Phase 1 amendment: **Sharpe 1.01, return +21.88%, drawdown −5.42%**. Used as the reference. |
+Baseline now confirmed: **+21.88% return, −5.42% max drawdown, Sharpe 1.01,
+38.7% win rate, average DQS 85.15** (5 years, walk-forward).
 
-The roadmap file itself was **not authored**: writing it would mean inventing
-requirements and presenting them as the governing spec. Supply the document and
-it will be added, and the Phase 1 amendment section appended to it.
+Phase 0 gate now known: **at least two weekly cycles run, no test broken, and
+average DQS must not fall below 80.**
 
 ---
 
@@ -63,17 +60,25 @@ weight would only change a cap, not the component's influence.
 pre-Phase-0 implementation (same score, same component breakdown) — the natural
 maximum of each raw sub-score equals its default weight.
 
-### D-04 · ASSUMPTION — "±5% cap" read as *relative*, not percentage points
-The order says `سقف تعديل ±5% لكل مكوّن DQS لكل دورة` without stating the base.
-Interpreted as **±5% of that component's current weight** (e.g. 20.0 → 19.0‥21.0).
-**Why:** percentage *points* would allow 25 → 30 in a single week — a 20% swing —
-which contradicts the gradual, bounded intent of a weekly learning loop.
-**Confirm against ICS-DOC-004 when it is supplied.** Configurable via
-`MAX_SHIFT_PCT` if the other reading was intended.
+### D-04 (CORRECTED) · The ±5 cap is ABSOLUTE POINTS, not relative percent
+**Implemented first as:** ±5% of the component's own weight (25 → 23.75‥26.25).
+**ICS-DOC-004 actually says:** ±5 **absolute percentage points**, and explicitly
+rejects the relative reading using this very example — "`strategy_alignment` عند
+25 يتحرك بحد أقصى بين 20 و30 في دورة واحدة، **لا 25±1.25**".
+
+**Corrected.** `MAX_SHIFT_POINTS = 5.0`; the re-balance now adds absolute points
+and is zero-sum by centring signals on the plain (unweighted) mean correlation.
+Guarded by `test_cap_is_absolute_points_not_relative_percent`, which asserts
+25 → 30.0 and explicitly fails the 26.25 reading. `MAX_SHIFT_PCT` remains as a
+backwards-compatible alias only.
+
+**Lesson:** this was an assumption made in the absence of the governing document
+and it was wrong. Phase 1 will not start until ICS-DOC-004 has been re-read
+against the implementation.
 
 ### D-05 · Zero-sum re-balance instead of cap-then-normalise
-Signals are centred on the **weight-weighted** mean correlation, so the deltas
-cancel and the total stays at exactly 100 without re-normalising.
+Signals are centred on the **plain** mean correlation, so the absolute-point
+deltas cancel and the total stays at exactly 100 without re-normalising.
 **Why:** the first implementation capped each move at ±5% and *then*
 re-normalised to 100 — which pushed a component to 5.38%, past its own cap. Caught
 by `test_shift_never_exceeds_the_five_percent_cap`. The floor/ceiling
@@ -100,6 +105,29 @@ NVDA), so comparisons must reuse one fixed dataset.
 explicit-pin rule. No other new dependency in Phase 0 — the loop reuses the
 existing SQLAlchemy models and the APScheduler instance already running inside
 the bot process.
+
+---
+
+### D-09 · Bound projection instead of re-normalisation after clamping
+Once the cap became absolute points, ten consecutive cycles drove one component
+to the ceiling and the rest to the floor; re-normalising that set
+(40 + 5·4 = 60, scaled by 100/60) threw the first component to 66.7 — straight
+back through the ceiling. Caught by
+`test_repeated_cycles_stay_bounded_and_normalised`.
+**Fixed** with `_project_to_bounds()`: clamp, then hand the residual only to
+components that still have headroom in the required direction, repeating until
+absorbed. Keeps the sum at exactly 100 *and* every weight inside [5, 40].
+
+### D-10 · Outcomes recorded by the weekly loop, not inside `paper/broker.py`
+ICS-DOC-004 §0.1 says the outcome fields are filled "عند إغلاق الصفقة فعلياً في
+`paper/broker.py`". The functional requirement — *only on a real close, never an
+advance estimate* — is met: `record_outcomes()` creates a `DecisionOutcome` only
+for positions already closed. The **location** differs deliberately.
+**Why:** MFE/MAE need the price path between entry and exit. Putting that fetch
+inside `close_position()` would give the paper broker network I/O and make it
+fail on a flaky data source, on the one code path that must stay deterministic
+and offline-testable. **Flag for review** — say the word and the call moves into
+`close_position()` with MFE/MAE back-filled by the loop.
 
 ---
 
