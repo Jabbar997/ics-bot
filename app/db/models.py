@@ -273,3 +273,65 @@ class SystemConfig(Base):
     key: Mapped[str] = mapped_column(String(60), primary_key=True)
     value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+# --------------------------------------------------------------------------- #
+# ICS-DOC-004 Phase 0 — learning feedback loop
+#
+# Both models below are NEW tables. Existing tables are deliberately left
+# untouched so `create_all()` upgrades a live database (which only creates
+# missing tables, never missing columns) without a migration step.
+# --------------------------------------------------------------------------- #
+class DecisionOutcome(Base):
+    """The realised result of one entry decision, once its position closed.
+
+    This is the supervised signal the feedback loop learns from: it pairs the
+    DQS components recorded at entry with what actually happened afterwards.
+    """
+
+    __tablename__ = "decision_outcomes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    decision_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("decisions.id"), index=True, nullable=True
+    )
+    position_id: Mapped[Optional[str]] = mapped_column(String(36), index=True, nullable=True)
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    strategy: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    entry_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    exit_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Required by ICS-DOC-004 Phase 0.
+    realized_return: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)
+    holding_period_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    mfe: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)  # max favourable excursion
+    mae: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)  # max adverse excursion
+
+    # DQS as scored at entry — the features the loop correlates against outcome.
+    dqs_at_entry: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    dqs_components_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+
+class LearningEvent(Base):
+    """Immutable record of one feedback-loop cycle.
+
+    Held to the same standard as AuditLog: every cycle — including the ones that
+    change nothing because the trade-count gate was not met — is written here
+    with the full context needed to reconstruct why weights moved.
+    """
+
+    __tablename__ = "learning_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    event_type: Mapped[str] = mapped_column(String(30), index=True)  # weight_update / skipped
+    applied: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    trades_considered: Mapped[int] = mapped_column(Integer, default=0)
+    min_trades_required: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    correlations_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    weights_before_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    weights_after_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    max_shift_pct: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)
+    raw_context_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)

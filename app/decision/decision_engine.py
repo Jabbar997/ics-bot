@@ -42,6 +42,11 @@ class DecisionEngine:
         self.broker = broker
         self.kill_switch_active = kill_switch_active
         self.decisions = DecisionRepository(session)
+        # ICS-DOC-004 Phase 0: DQS weights may have been re-balanced by the
+        # learning loop. Loaded once per engine; defaults when never tuned.
+        from app.learning.weights import load_weights
+
+        self.dqs_weights = load_weights(session)
 
     def _raw_context(self, signal, features, regime, dqs, risk) -> dict:
         return {
@@ -66,7 +71,12 @@ class DecisionEngine:
         # Compute DQS for every candidate (BUY and near-miss REJECT alike).
         risk_ctx = build_risk_context(signal, features, portfolio_state, self.config)
         dqs = calculate_dqs(
-            signal, features, regime, risk_ctx, minimum_dqs=self.config.risk.minimum_dqs
+            signal,
+            features,
+            regime,
+            risk_ctx,
+            minimum_dqs=self.config.risk.minimum_dqs,
+            weights=self.dqs_weights,
         )
 
         # Strategy explicitly stood aside but flagged a near-miss: log as rejected.

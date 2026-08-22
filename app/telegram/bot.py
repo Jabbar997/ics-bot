@@ -79,6 +79,7 @@ class ICSBot:
             "commands": self.service.commands,
             "menu": self.service.commands,
             "health": self.service.health,
+            "learning": self.service.learning,
             "status": self.service.status,
             "portfolio": self.service.portfolio,
             "positions": self.service.positions,
@@ -145,6 +146,7 @@ class ICSBot:
                 BotCommand("commands", "عرض كل الأوامر"),
                 BotCommand("menu", "عرض كل الأوامر"),
                 BotCommand("health", "فحص صحة النظام"),
+                BotCommand("learning", "حلقة التعلّم وأوزان DQS"),
                 BotCommand("status", "حالة النظام"),
                 BotCommand("portfolio", "قيمة المحفظة والعائد"),
                 BotCommand("positions", "المراكز المفتوحة"),
@@ -160,7 +162,7 @@ class ICSBot:
                 BotCommand("resume", "إعادة تشغيل النظام"),
             ]
         )
-        log.info("Telegram command menu registered (%d commands).", 17)
+        log.info("Telegram command menu registered (%d commands).", 18)
         self._set_config("bot_started_at", _now_str())
 
         # Start the in-process scheduler so the SAME worker also pushes the
@@ -233,8 +235,16 @@ class ICSBot:
             id="status_report",
             replace_existing=True,
         )
+        # ICS-DOC-004 Phase 0: weekly DQS learning cycle, run after the weekly
+        # report so the report reflects the pre-update weights.
+        self._scheduler.add_job(
+            self._run_learning_job,
+            CronTrigger(day_of_week=weekday, hour=hh, minute=(weekly_minute + 5) % 60, timezone=KSA),
+            id="learning_cycle",
+            replace_existing=True,
+        )
         self._scheduler.start()
-        self._set_config("scheduler_status", "🟢 فعّال (٣ مهام)")
+        self._set_config("scheduler_status", "🟢 فعّال (٤ مهام)")
         log.info(
             "Report scheduler started: daily %02d:%02d, weekly %s %02d:%02d, status %02d:%02d KSA.",
             hh, mm, weekday, hh, weekly_minute, sh, sm,
@@ -298,6 +308,33 @@ class ICSBot:
         except Exception:
             log.warning("Could not fetch SPY weekly return; using 0.")
         return run_weekly_workflow(self.config, spy_weekly=spy_weekly, send_report=False)
+
+    async def _run_learning_job(self) -> None:
+        """ICS-DOC-004 Phase 0: weekly DQS feedback cycle."""
+        import asyncio
+
+        log.info("Running scheduled LEARNING cycle...")
+        loop = asyncio.get_running_loop()
+        try:
+            text = await loop.run_in_executor(None, self._run_learning_cycle)
+            await self._broadcast(text)
+            self._set_config("last_learning_cycle_at", _now_str())
+        except Exception:
+            log.exception("Scheduled learning cycle failed")
+
+    def _run_learning_cycle(self) -> str:
+        """Blocking half of the learning job (DB + optional price fetches)."""
+        from app.db.database import session_scope
+        from app.learning.feedback_loop import run_feedback_cycle
+
+        with session_scope() as s:
+            result = run_feedback_cycle(s)
+        lines = ["🧠 دورة تعلّم ICS الأسبوعية", "", result.summary()]
+        if result.applied:
+            lines += ["", "الأوزان الجديدة:"]
+            lines += [f"  • {k}: {v:.2f}" for k, v in result.weights_after.items()]
+        lines += ["", "تداول ورقي فقط."]
+        return "\n".join(lines)
 
     async def _run_status_job(self) -> None:
         """v1.1 daily heartbeat: short status report + lightweight state backup."""

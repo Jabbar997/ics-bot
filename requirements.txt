@@ -26,6 +26,11 @@ python-telegram-bot>=21.0
 # --- Scheduling ---
 APScheduler>=3.10
 
+# --- Learning / statistics (ICS-DOC-004 Phase 0) ---
+# Spearman rank correlation between DQS components and realised returns.
+# Pinned exactly per the ICS-DOC-004 execution rule (no open >= for phase libs).
+scipy==1.17.1
+
 # --- Testing ---
 pytest>=7.4
 

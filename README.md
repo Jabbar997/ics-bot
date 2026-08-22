@@ -262,6 +262,42 @@ python -m app.main daily --force   # run anyway
 
 ---
 
+## 4d. ICS-DOC-004 Phase 0 — DQS learning feedback loop
+
+The system now learns which parts of its own scoring actually predicted returns,
+and re-balances the DQS weights within hard bounds. **Paper-only: the loop can
+only change how candidates are scored — never how they are sized, risked, or
+exited.**
+
+**How one weekly cycle works**
+1. Record a `DecisionOutcome` for each newly closed position — `realized_return`,
+   `holding_period_days`, `mfe`, `mae`, plus the DQS components scored at entry.
+2. **Gate:** fewer than **30** closed trades → nothing changes (still recorded).
+3. Spearman correlation (scipy) between each component's points and the realised return.
+4. Weights nudged toward what predicted returns, capped at **±5% of each
+   component's own weight per cycle**, floor 5 / ceiling 40.
+5. Zero-sum re-balance → the weights still sum to **exactly 100**.
+6. A `LearningEvent` is written **every** cycle — applied or skipped — with
+   correlations, before/after weights, and trade count (AuditLog-grade rigour).
+
+Scheduled weekly, 5 minutes after the weekly report (so that report reflects the
+pre-update weights). Weights persist in `system_config` under `dqs_weights`;
+a database that never ran a cycle behaves exactly as before Phase 0.
+
+```
+/learning     # current DQS weights, recorded outcomes, recent learning cycles
+```
+
+**Behaviour-neutral until it learns:** with default weights `calculate_dqs()`
+returns bit-identical scores to the pre-Phase-0 implementation, and a 5-year
+backtest on a fixed dataset reproduces the baseline exactly
+(+24.75% / −5.43% / Sharpe 1.11 / 164 trades, decisions == audit logs).
+
+New dependency: `scipy==1.17.1`. See `DECISIONS_AND_ASSUMPTIONS.md` for the
+assumptions made (notably how the ±5% cap is interpreted).
+
+---
+
 ## 5. Safety model
 
 - **No real broker integration anywhere.** The only execution path is

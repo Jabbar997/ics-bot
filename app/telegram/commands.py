@@ -200,6 +200,52 @@ class CommandService:
     def performance(self) -> str:
         return self.weekly()
 
+    def learning(self, limit: int = 5) -> str:
+        """ICS-DOC-004 Phase 0 — current DQS weights and recent learning events."""
+        from sqlalchemy import select
+
+        from app.db.models import DecisionOutcome, LearningEvent
+        from app.learning.feedback_loop import MAX_SHIFT_PCT, MIN_CLOSED_TRADES
+        from app.learning.weights import load_weights
+
+        with session_scope() as s:
+            weights = load_weights(s)
+            outcomes = list(s.scalars(select(DecisionOutcome)))
+            n_outcomes = len(outcomes)
+            events = list(
+                s.scalars(select(LearningEvent).order_by(LearningEvent.timestamp.desc()).limit(limit))
+            )
+            rows = [
+                (e.timestamp, e.event_type, e.applied, e.trades_considered, e.reason)
+                for e in events
+            ]
+
+        lines = [
+            "🧠 حلقة التعلّم — ICS",
+            "",
+            "أوزان DQS الحالية:",
+        ]
+        for name, w in weights.items():
+            lines.append(f"  • {name}: {w:.2f}")
+        lines.append(f"  المجموع: {sum(weights.values()):.2f}")
+        lines += [
+            "",
+            f"صفقات مغلقة مُسجَّلة: {n_outcomes} (الحد الأدنى للتعديل: {MIN_CLOSED_TRADES})",
+            f"سقف التعديل لكل مكوّن في الدورة: ±{MAX_SHIFT_PCT}%",
+            "",
+        ]
+        if not rows:
+            lines.append("لا توجد دورات تعلّم مسجّلة بعد.")
+        else:
+            lines.append(f"آخر {len(rows)} دورة:")
+            for ts, etype, applied, trades, reason in rows:
+                mark = "✅" if applied else "⏸"
+                lines.append(f"  {mark} {ts:%Y-%m-%d} | {etype} | صفقات {trades}")
+                if reason:
+                    lines.append(f"     {reason}")
+        lines += ["", "تداول ورقي فقط — التعلّم يعدّل التقييم لا المخاطر."]
+        return "\n".join(lines)
+
     def health(self) -> str:
         """v1.1 health check. Never includes the DB URL or any secret."""
         from sqlalchemy import func, select
