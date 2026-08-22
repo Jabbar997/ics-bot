@@ -112,13 +112,18 @@ class Backtester:
             session.close()
 
     # ------------------------------------------------------------------ #
-    def _portfolio_state(self, broker: PaperBroker, snapshots_repo) -> PortfolioState:
+    def _portfolio_state(self, broker: PaperBroker, equity: List[float]) -> PortfolioState:
+        """Build the risk-manager's portfolio view.
+
+        ``equity`` is the in-memory equity curve maintained by :meth:`_simulate`.
+        It previously re-read the whole portfolio_snapshots table on every
+        signal, which made the backtest O(n^2) — identical results, far slower.
+        """
         total = float(broker.calculate_total_value({}))
         cash = float(broker.calculate_cash())
-        snaps = snapshots_repo.all()
-        weekly = self._trailing_return(snaps, 5)
-        monthly = self._trailing_return(snaps, 21)
-        dd = self._current_drawdown([float(s.total_value) for s in snaps] + [total])
+        weekly = self._trailing_return(equity, 5)
+        monthly = self._trailing_return(equity, 21)
+        dd = self._current_drawdown(equity + [total])
         return PortfolioState(
             total_value=total,
             cash=cash,
@@ -128,11 +133,11 @@ class Backtester:
         )
 
     @staticmethod
-    def _trailing_return(snaps, lookback: int) -> float:
-        if len(snaps) <= lookback:
+    def _trailing_return(equity: List[float], lookback: int) -> float:
+        if len(equity) <= lookback:
             return 0.0
-        prev = float(snaps[-lookback].total_value)
-        cur = float(snaps[-1].total_value)
+        prev = float(equity[-lookback])
+        cur = float(equity[-1])
         return (cur / prev - 1.0) if prev else 0.0
 
     @staticmethod
@@ -154,6 +159,8 @@ class Backtester:
     def _simulate(self, session, features, spy_feat, calendar) -> BacktestResult:
         broker = PaperBroker(session, self.config)
         snaps_repo = PortfolioSnapshotRepository(session)
+        # In-memory equity curve (avoids re-querying the snapshots table).
+        equity: List[float] = []
         positions_repo = PositionRepository(session)
 
         tradeable = [s for s in features if s != self.benchmark] or list(features)
@@ -165,7 +172,9 @@ class Backtester:
             day = calendar[i]
             next_day = calendar[i + 1]
 
-            regime = analyze_from_features_df(spy_feat.loc[:day])
+            # Positional lookup: slicing `.loc[:day]` copied the whole
+            # history for every symbol every day (the real O(n^2) cost).
+            regime = analyze_from_features_df(spy_feat, spy_feat.index.get_loc(day))
             ks_active = self._defensive(regime)
             decision_engine = DecisionEngine(session, self.config, broker, kill_switch_active=False)
 
@@ -176,7 +185,7 @@ class Backtester:
                 feat = features[pos.ticker]
                 if day not in feat.index:
                     continue
-                snap = build_feature_snapshot(pos.ticker, feat.loc[:day])
+                snap = build_feature_snapshot(pos.ticker, feat, feat.index.get_loc(day))
                 exit_sig = self.engine.evaluate_exit(
                     pos.strategy or "trend", snap, regime, pos.entry_price, pos.stop_loss, pos.target_price
                 )
@@ -193,13 +202,13 @@ class Backtester:
                     feat = features.get(sym)
                     if feat is None or day not in feat.index:
                         continue
-                    snap = build_feature_snapshot(sym, feat.loc[:day])
+                    snap = build_feature_snapshot(sym, feat, feat.index.get_loc(day))
                     if snap.is_complete():
                         snapshots[sym] = snap
 
                 signals = self.engine.generate_signals(snapshots, regime)
                 open_views = [OpenPositionView(p.ticker, float(p.quantity)) for p in positions_repo.open_positions()]
-                pstate = self._portfolio_state(broker, snaps_repo)
+                pstate = self._portfolio_state(broker, equity)
 
                 for sig in signals:
                     feat = features[sig.ticker]
@@ -210,13 +219,13 @@ class Backtester:
                         continue
                     # Decision uses day `i` features; execution price = next open.
                     if sig.action.value == "buy":
-                        snap_exec = build_feature_snapshot(sig.ticker, feat.loc[:day])
+                        snap_exec = build_feature_snapshot(sig.ticker, feat, feat.index.get_loc(day))
                         snap_exec.close = fill  # execute/size at the realistic fill
                     else:
                         snap_exec = snap
                     decision_engine.process_signal(sig, snap_exec, regime, pstate, open_views, ts=next_day)
                     open_views = [OpenPositionView(p.ticker, float(p.quantity)) for p in positions_repo.open_positions()]
-                    pstate = self._portfolio_state(broker, snaps_repo)
+                    pstate = self._portfolio_state(broker, equity)
 
             # 3) Mark to market at next-day close and snapshot.
             prices = {}
@@ -224,7 +233,8 @@ class Backtester:
                 px = self._price_on(features[sym], next_day, "close")
                 if px is not None:
                     prices[sym] = px
-            broker.update_portfolio_snapshot(prices, ts=next_day)
+            snapshot = broker.update_portfolio_snapshot(prices, ts=next_day)
+            equity.append(float(snapshot.total_value))
 
         session.flush()
         return self._build_result(session, broker, spy_feat, calendar, result_start, result_end)
