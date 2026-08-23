@@ -152,6 +152,25 @@ class PositionRepository:
         stmt = select(Position).where(Position.is_open.is_(True))
         return list(self.session.scalars(stmt))
 
+    def open_tactical_positions(self) -> List[Position]:
+        """Open positions excluding the core allocation.
+
+        The core is an index holding, not a strategy bet: it must not count
+        toward ``max_open_positions``, must not be exited by strategy rules, and
+        must not be sized by ``max_position_size_pct``.
+        """
+        from app.paper.core_allocation import CORE_STRATEGY
+
+        return [p for p in self.open_positions() if p.strategy != CORE_STRATEGY]
+
+    def get_core_position(self) -> Optional[Position]:
+        from app.paper.core_allocation import CORE_STRATEGY
+
+        stmt = select(Position).where(
+            Position.is_open.is_(True), Position.strategy == CORE_STRATEGY
+        )
+        return self.session.scalars(stmt).first()
+
     def get_open_by_ticker(self, ticker: str) -> Optional[Position]:
         stmt = select(Position).where(
             Position.ticker == ticker, Position.is_open.is_(True)

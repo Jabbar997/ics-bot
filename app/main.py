@@ -187,7 +187,7 @@ def run_daily_workflow(
         de = DecisionEngine(s, config, broker, kill_switch_active=ks_active)
 
         # 9(exits). Close positions whose exit rules fired (fill at latest close).
-        for pos in list(positions_repo.open_positions()):
+        for pos in list(positions_repo.open_tactical_positions()):
             feat = features.get(pos.ticker)
             if feat is None:
                 continue
@@ -200,10 +200,19 @@ def run_daily_workflow(
 
         # If kill switch L2/L3 requests closing positions, do so (paper only).
         if ks_eval.close_fraction >= 1.0:
-            for pos in list(positions_repo.open_positions()):
+            for pos in list(positions_repo.open_tactical_positions()):
                 feat = features.get(pos.ticker)
                 px = float(feat["close"].iloc[-1]) if feat is not None else pos.entry_price
                 broker.close_position(pos, px, reason=f"Kill switch L{ks_eval.level.value}")
+            # The core is only liquidated at the configured level (D-15).
+            from app.paper.core_allocation import should_liquidate_core
+
+            if should_liquidate_core(config, ks_eval.level.value):
+                core_px = latest_prices.get(config.core_allocation.symbol)
+                if core_px:
+                    broker.liquidate_core(
+                        core_px, reason=f"Kill switch L{ks_eval.level.value}"
+                    )
 
         # 5-9(entries). Generate, score, validate, execute — unless defensive.
         defensive = ks_active or regime.regime == Regime.PANIC or (
@@ -219,11 +228,19 @@ def run_daily_workflow(
                 if snap.is_complete():
                     snapshots[sym] = snap
             signals = engine.generate_signals(snapshots, regime)
-            open_views = [OpenPositionView(p.ticker, float(p.quantity)) for p in positions_repo.open_positions()]
+            open_views = [OpenPositionView(p.ticker, float(p.quantity)) for p in positions_repo.open_tactical_positions()]
             for sig in signals:
                 de.process_signal(sig, snapshots[sig.ticker], regime, pstate, open_views)
-                open_views = [OpenPositionView(p.ticker, float(p.quantity)) for p in positions_repo.open_positions()]
+                open_views = [OpenPositionView(p.ticker, float(p.quantity)) for p in positions_repo.open_tactical_positions()]
                 pstate = _portfolio_state(broker, snaps_repo, latest_prices)
+
+        # 10b. Core allocation: deploy idle cash into the benchmark (amendment).
+        if config.core_allocation.enabled and not ks_active:
+            core_px = latest_prices.get(config.core_allocation.symbol)
+            if core_px:
+                note = broker.maintain_core(core_px)
+                if note:
+                    log.info("Core allocation: %s", note)
 
         # 11-12. Mark to market + snapshot.
         broker.update_portfolio_snapshot(latest_prices)

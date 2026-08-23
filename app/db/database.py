@@ -50,7 +50,11 @@ def _json_serializer(obj: Any) -> str:
     return json.dumps(obj, default=_json_default)
 
 
-def init_engine(database_url: str = "sqlite:///./ics.db", echo: bool = False) -> Engine:
+def init_engine(
+    database_url: str = "sqlite:///./ics.db",
+    echo: bool = False,
+    force_reset: bool = False,
+) -> Engine:
     """Create the global engine and session factory.
 
     Idempotent: if an engine for the same URL already exists it is reused, so a
@@ -60,7 +64,11 @@ def init_engine(database_url: str = "sqlite:///./ics.db", echo: bool = False) ->
     global _engine, _SessionFactory, _engine_url
 
     url = normalize_database_url(database_url)
-    if _engine is not None and _engine_url == url:
+    # `force_reset` exists for the backtester: reusing a cached engine for the
+    # same URL (especially sqlite:///:memory:) silently carried one run's rows
+    # into the next, so successive scenarios accumulated instead of starting
+    # clean. The live bot still wants the idempotent path.
+    if _engine is not None and _engine_url == url and not force_reset:
         return _engine
     if _engine is not None:
         _engine.dispose()

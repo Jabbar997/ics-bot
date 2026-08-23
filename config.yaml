@@ -18,6 +18,22 @@ risk:
 benchmark:
   symbol: SPY
 
+# Core-satellite (ICS-DOC-004 amendment, approved 2026-08-23).
+# The core deploys idle cash into the diversified benchmark; the tactical layer
+# (3 x 10%) runs on top of it unchanged. Core + tactical never exceeds
+# max_total_deployment_pct — no leverage, ever.
+# NOTE: disabled by default. The approval to enable it at 50% was given on
+# projected numbers (+73.00% / -12.93% / Sharpe 1.20) that a database-isolation
+# bug later invalidated. Measured cleanly it is +37.36% / -10.95% / Sharpe 0.98.
+# Re-enable only after an explicit decision on the corrected figures.
+core_allocation:
+  enabled: false
+  symbol: SPY
+  target_pct: 50
+  rebalance_band_pct: 5
+  max_total_deployment_pct: 85
+  liquidate_on_kill_level: 3
+
 market:
   data_provider: yfinance
   timeframe: 1d

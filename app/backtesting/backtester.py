@@ -102,7 +102,10 @@ class Backtester:
             calendar = calendar[calendar <= pd.Timestamp(end)]
 
         # Fresh, isolated DB for this backtest run.
-        database.init_engine(database_url)
+        # Always a genuinely fresh database: a cached engine would carry the
+        # previous scenario's rows into this run.
+        database.init_engine(database_url, force_reset=True)
+        database.drop_all()
         database.create_all()
         session = database.new_session()
         try:
@@ -226,6 +229,14 @@ class Backtester:
                     decision_engine.process_signal(sig, snap_exec, regime, pstate, open_views, ts=next_day)
                     open_views = [OpenPositionView(p.ticker, float(p.quantity)) for p in positions_repo.open_positions()]
                     pstate = self._portfolio_state(broker, equity)
+
+            # 2b) Core allocation — same code path as the live daily cycle.
+            if self.config.core_allocation.enabled and not ks_active:
+                core_feat = features.get(self.config.core_allocation.symbol)
+                if core_feat is not None:
+                    core_px = self._price_on(core_feat, next_day, "open")
+                    if core_px:
+                        broker.maintain_core(core_px, ts=next_day)
 
             # 3) Mark to market at next-day close and snapshot.
             prices = {}

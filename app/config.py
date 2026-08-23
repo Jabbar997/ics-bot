@@ -75,6 +75,29 @@ class RiskConfig(BaseModel):
     absolute_stop_loss_pct: float = 7.0
 
 
+class CoreAllocationConfig(BaseModel):
+    """Core-satellite structure (ICS-DOC-004 amendment, approved 2026-08-23).
+
+    Diagnosis that motivated it: with only 3 tactical positions at 10% each, ~70%
+    of capital sat idle and the portfolio returned almost exactly what holding
+    30% of the benchmark would have. The core deploys part of that idle cash into
+    the diversified benchmark, which historically cost far less drawdown per unit
+    of deployment than adding more concentrated single-name positions.
+
+    The core is deliberately exempt from ``max_position_size_pct`` — it is an
+    index allocation, not a stock bet — but never from the no-leverage rule.
+    """
+
+    enabled: bool = False
+    symbol: str = "SPY"          # defaults to the benchmark
+    target_pct: float = 50.0     # share of portfolio value held in the core
+    rebalance_band_pct: float = 5.0   # only trade when drift exceeds this
+    # Total deployment ceiling: core + tactical may never exceed this.
+    max_total_deployment_pct: float = 85.0
+    # Kill switch: the core is only liquidated at Level 3 (full stop).
+    liquidate_on_kill_level: int = 3
+
+
 class BenchmarkConfig(BaseModel):
     symbol: str = "SPY"
 
@@ -108,6 +131,7 @@ class Config(BaseModel):
     capital: CapitalConfig = Field(default_factory=CapitalConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
     benchmark: BenchmarkConfig = Field(default_factory=BenchmarkConfig)
+    core_allocation: CoreAllocationConfig = Field(default_factory=CoreAllocationConfig)
     market: MarketConfig = Field(default_factory=MarketConfig)
     paper: PaperConfig = Field(default_factory=PaperConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
