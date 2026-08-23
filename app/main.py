@@ -9,6 +9,7 @@ Subcommands::
     python -m app.main bot            # run the Telegram bot (long-polling)
     python -m app.main scheduler      # APScheduler: daily + weekly jobs
     python -m app.main demo           # offline synthetic cycle (no network)
+    python -m app.main ml-shadow      # Phase 1 shadow evaluation + activation gate
 
 Execution conventions:
 * Backtest: orders fill at the NEXT trading day's open (conservative, no look-ahead).
@@ -327,6 +328,29 @@ def run_bot(config: Config) -> None:
     ICSBot(config).run()
 
 
+def run_ml_shadow(config: Config, period: Optional[str] = None) -> None:
+    """ICS-DOC-004 Phase 1 — shadow evaluation + activation gate. Read-only.
+
+    Trains nothing into the live pipeline and never sets ml_confidence; it only
+    reports whether the model has earned the right to leave shadow mode.
+    """
+    from app.data.market_data import fetch_watchlist_history
+    from app.features.feature_engine import compute_features
+    from app.ml.shadow import run_shadow_evaluation
+
+    period = period or f"{config.market.history_years}y"
+    symbols = list(dict.fromkeys(config.watchlist + [config.benchmark.symbol]))
+    log.info("Fetching %s of history for %d symbols...", period, len(symbols))
+    data = fetch_watchlist_history(symbols, period=period)
+    data = {s: d for s, d in data.items() if d is not None and not d.empty}
+
+    spy_close = data[config.benchmark.symbol]["close"]
+    features = {s: compute_features(d, spy_close=spy_close) for s, d in data.items()}
+
+    report = run_shadow_evaluation(features)
+    print("\n" + report.summary())
+
+
 # --------------------------------------------------------------------------- #
 # Offline demo (no network)
 # --------------------------------------------------------------------------- #
@@ -361,7 +385,10 @@ def run_demo(config: Config) -> None:
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ics", description="Investment Command System (paper-only).")
-    p.add_argument("command", choices=["init-db", "daily", "weekly", "backtest", "bot", "scheduler", "demo"])
+    p.add_argument(
+        "command",
+        choices=["init-db", "daily", "weekly", "backtest", "bot", "scheduler", "demo", "ml-shadow"],
+    )
     p.add_argument("--config", default=None, help="Path to config.yaml")
     p.add_argument("--send", action="store_true", help="Send report to Telegram")
     p.add_argument("--period", default=None, help="Backtest history period, e.g. 5y")
@@ -392,6 +419,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         run_scheduler(config)
     elif args.command == "demo":
         run_demo(config)
+    elif args.command == "ml-shadow":
+        run_ml_shadow(config, period=args.period)
 
 
 if __name__ == "__main__":

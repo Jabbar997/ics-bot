@@ -167,3 +167,47 @@ its gate first; `optuna`/DSR are deliberately absent from Phase 0):
 3. `optuna` to be pinned exactly in `requirements.txt` at implementation time; a
    "تعديل — تشديد إحصائي المرحلة 1" section to be added to
    `ICS-DOC-004-learning-intelligence-roadmap.md` once that document exists.
+
+---
+
+## Phase 1 — machine-learning layer (shadow)
+
+**Date:** 2026-08-22 · Approved parameters: horizon **10 sessions**, **expanding**
+training window (2-year minimum), **Spearman IC** tuning objective,
+**3 contiguous windows** for the gate.
+
+### D-11 · Ratio features are normalisation, not new features
+ICS-DOC-004 Phase 1 §1 says "لا فيتشرز جديدة — استخدم الموجود فقط". All 13 model
+inputs are ratios of indicators `feature_engine.py` already computes
+(`close/ma50`, `atr14/close`, `volume/volume_ma20`, …).
+**Why:** the model trains across symbols, and a raw `close` of 700 (SPY) against
+60 (KO) is not comparable — the model would learn the ticker, not the setup.
+No new indicator, data source, or lookback was introduced.
+**Flag for review** if the constraint was meant to forbid transformations too.
+
+### D-12 · The out-of-sample period is ~2.2 years, not 5
+The gate windows came out at ~9 months each rather than the ~20 months implied
+by "3 windows over 5 years". The walk-forward warm-up consumes the front of the
+data: ~200 bars for MA200 plus the 504-session (2-year) training minimum, so the
+first legal prediction is 2024-06 and only ~2.2 years remain out of sample.
+**Not hidden, and it does not change the verdict** (the model failed 0/3), but a
+longer history or a shorter training minimum would be needed for windows of the
+originally intended length.
+
+### D-13 · The gate's portfolio construction is a screening metric
+Per-window return/drawdown/Sharpe come from a top-3, equally weighted portfolio
+of the model's daily ranking, with each 10-day label spread evenly across its
+holding period. That smoothing flatters Sharpe (window 2 reports 6.82, which is
+not a realistic figure).
+**Why acceptable:** it is the *cheap* gate, run first. A model that cannot pass
+it has no case for the expensive full "DQS + ML" counterfactual backtest. Since
+the model failed 0/3 windows with a negative IC in two of them, that second
+backtest would only have confirmed a negative.
+
+### D-14 · One tuning run per walk-forward, not one per month
+`optuna` runs once on the earliest legal training window and those
+hyper-parameters are reused for all 27 monthly retrains (the models themselves
+are retrained monthly).
+**Why:** re-tuning monthly would multiply the trial count by 27, and every trial
+counts against the DSR deflation — it would raise the statistical bar enormously
+for no modelling benefit on a dataset this size.
