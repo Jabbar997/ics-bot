@@ -263,6 +263,7 @@ class CommandService:
             bot_started = cfg.get("bot_started_at", "—")
             last_cycle = cfg.get("last_decision_cycle_at", "لم تُشغّل بعد")
             last_daily = cfg.get("last_daily_report_at", "لم يُرسل بعد")
+            missing = cfg.get("last_missing_symbols", "") or ""
             n_dec = s.scalar(select(func.count()).select_from(Decision)) or 0
             n_aud = s.scalar(select(func.count()).select_from(AuditLog)) or 0
             ks = KillSwitchManager(s)
@@ -286,6 +287,8 @@ class CommandService:
                 "",
                 f"آخر دورة قرار: {last_cycle}",
                 f"آخر تقرير يومي: {last_daily}",
+                ("بيانات مفقودة آخر دورة: " + missing) if missing
+                else "اكتمال البيانات: ✅ كل الرموز",
                 f"بدء البوت: {bot_started}",
                 "",
                 f"تطابق السجلات (قرارات=تدقيق): {invariant} ({n_dec}={n_aud})",

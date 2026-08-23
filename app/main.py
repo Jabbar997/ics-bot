@@ -116,11 +116,21 @@ def run_daily_workflow(
     symbols = list(dict.fromkeys(config.watchlist + [benchmark]))
 
     # 1-2. Fetch + clean (or use injected data for tests/demo).
+    missing_symbols: List[str] = []
     if data is None:
-        from app.data.market_data import fetch_watchlist_history
+        from app.data.market_data import fetch_watchlist
 
         period = f"{config.market.history_years}y"
-        data = fetch_watchlist_history(symbols, period=period)
+        # The benchmark is required: without it there is no regime, so a failure
+        # must stop the cycle instead of producing a quietly partial one.
+        report = fetch_watchlist(symbols, period=period, required=(benchmark,))
+        data = report.frames
+        missing_symbols = list(report.failed)
+        if missing_symbols:
+            log.error(
+                "Proceeding without %d symbol(s): %s",
+                len(missing_symbols), ", ".join(missing_symbols),
+            )
 
     # 3. Features.
     spy_df = data.get(benchmark)
@@ -253,6 +263,8 @@ def run_daily_workflow(
         )
         # v1.2: remember which market bar this cycle consumed.
         cfg_repo.set("last_processed_bar_date", latest_bar)
+        # Reliability: surface any symbols this cycle could not fetch.
+        cfg_repo.set("last_missing_symbols", ",".join(missing_symbols))
 
     # 14. Daily report.
     from app.telegram.commands import CommandService
