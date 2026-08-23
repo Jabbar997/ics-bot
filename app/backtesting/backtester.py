@@ -96,10 +96,22 @@ class Backtester:
 
         spy_feat = features[self.benchmark]
         calendar = spy_feat.index
+
+        # Warm-up is taken from the data BEFORE the window, not out of it.
+        # Slicing the calendar first and then skipping WARMUP_BARS inside the
+        # slice cost a short window most of its tradeable days — which is what
+        # made an earlier 3-window validation come back empty.
+        first_i = WARMUP_BARS
+        last_i = len(calendar) - 1  # exclusive: i+1 must exist for the fill
         if start is not None:
-            calendar = calendar[calendar >= pd.Timestamp(start)]
+            first_i = max(first_i, int(calendar.searchsorted(pd.Timestamp(start), "left")))
         if end is not None:
-            calendar = calendar[calendar <= pd.Timestamp(end)]
+            last_i = min(last_i, int(calendar.searchsorted(pd.Timestamp(end), "right")) - 1)
+        if last_i <= first_i:
+            raise ValueError(
+                "Backtest window is empty once warm-up is accounted for "
+                f"({first_i} -> {last_i}); widen the window or supply more history."
+            )
 
         # Fresh, isolated DB for this backtest run.
         # Always a genuinely fresh database: a cached engine would carry the
@@ -109,7 +121,7 @@ class Backtester:
         database.create_all()
         session = database.new_session()
         try:
-            return self._simulate(session, features, spy_feat, calendar)
+            return self._simulate(session, features, spy_feat, calendar, first_i, last_i)
         finally:
             session.commit()
             session.close()
@@ -159,7 +171,7 @@ class Backtester:
             return None
         return float(val)
 
-    def _simulate(self, session, features, spy_feat, calendar) -> BacktestResult:
+    def _simulate(self, session, features, spy_feat, calendar, first_i, last_i) -> BacktestResult:
         broker = PaperBroker(session, self.config)
         snaps_repo = PortfolioSnapshotRepository(session)
         # In-memory equity curve (avoids re-querying the snapshots table).
@@ -167,11 +179,10 @@ class Backtester:
         positions_repo = PositionRepository(session)
 
         tradeable = [s for s in features if s != self.benchmark] or list(features)
-        n = len(calendar)
-        result_start = calendar[0] if n else None
-        result_end = calendar[-1] if n else None
+        result_start = calendar[first_i]
+        result_end = calendar[last_i]
 
-        for i in range(WARMUP_BARS, n - 1):
+        for i in range(first_i, last_i):
             day = calendar[i]
             next_day = calendar[i + 1]
 
@@ -248,7 +259,7 @@ class Backtester:
             equity.append(float(snapshot.total_value))
 
         session.flush()
-        return self._build_result(session, broker, spy_feat, calendar, result_start, result_end)
+        return self._build_result(session, broker, spy_feat, result_start, result_end)
 
     def _defensive(self, regime: RegimeResult) -> bool:
         from app.domain import Regime
@@ -259,13 +270,13 @@ class Backtester:
             return True
         return False
 
-    def _build_result(self, session, broker, spy_feat, calendar, start, end) -> BacktestResult:
+    def _build_result(self, session, broker, spy_feat, start, end) -> BacktestResult:
         snaps = PortfolioSnapshotRepository(session).all()
         closed = PositionRepository(session).closed_positions()
         all_decisions = self._all_decisions(session)
         audits = AuditRepository(session).count()
 
-        spy_ret = period_return(spy_feat.loc[calendar[0] : calendar[-1]]["close"]) if len(calendar) else 0.0
+        spy_ret = period_return(spy_feat.loc[start:end]["close"]) if start is not None else 0.0
 
         perf = evaluator.evaluate(
             period="backtest",
