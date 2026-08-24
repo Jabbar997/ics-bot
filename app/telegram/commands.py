@@ -26,6 +26,19 @@ from app.utils.money import money_str, pct_str
 
 SAFETY = "تداول ورقي فقط — محاكاة تعليمية. ليست نصيحة مالية."
 
+# Single source of truth for what the bot offers. `bot.py` registers handlers
+# from this, and `/start` advertises from this, so the two cannot drift apart.
+COMMAND_GROUPS = [
+    ("📊 التقارير", ["today", "weekly", "performance"]),
+    ("💼 المحفظة", ["portfolio", "positions", "rejected"]),
+    ("🧠 التعلّم", ["learning", "audit"]),
+    ("⚙️ النظام", ["status", "health", "rules", "watchlist"]),
+    ("🛑 التحكّم", ["kill", "stop", "resume"]),
+    ("ℹ️ المساعدة", ["start", "commands", "menu"]),
+]
+
+ALL_COMMANDS = [name for _title, names in COMMAND_GROUPS for name in names]
+
 
 class CommandService:
     def __init__(self, config: Config):
@@ -34,10 +47,22 @@ class CommandService:
     def start(self) -> str:
         return (
             "ICS — نظام قيادة الاستثمار (وضع المحلّل/المتدرّب).\n"
-            f"{SAFETY}\n\n"
-            "الأوامر: /start /status /portfolio /positions /today /weekly /rules "
-            "/watchlist /audit /rejected /performance /kill /stop /resume /commands /menu"
+            f"{SAFETY}\n\n" + self.command_list()
         )
+
+    @staticmethod
+    def command_list() -> str:
+        """The advertised command list, grouped.
+
+        Built from :data:`COMMAND_GROUPS` — the same source the bot registers
+        handlers from — so a new command can no longer be wired up and then go
+        unmentioned here, which is exactly how /health and /learning stayed
+        invisible to the user.
+        """
+        lines = []
+        for title, names in COMMAND_GROUPS:
+            lines.append(f"{title}: " + " ".join(f"/{n}" for n in names))
+        return "\n".join(lines)
 
     def commands(self) -> str:
         return self.start()
@@ -243,6 +268,12 @@ class CommandService:
                 lines.append(f"  {mark} {ts:%Y-%m-%d} | {etype} | صفقات {trades}")
                 if reason:
                     lines.append(f"     {reason}")
+        with session_scope() as s:
+            from app.learning.threshold_tuner import load_threshold
+            learned = load_threshold(s, self.config.risk.minimum_dqs)
+        base = self.config.risk.minimum_dqs
+        mark = "" if abs(learned - base) < 0.01 else f" (الأصل {base})"
+        lines.insert(2, f"عتبة DQS المُعايَرة: {learned:.0f}{mark}")
         lines += self._calibration_lines()
         lines += ["", "تداول ورقي فقط — التعلّم يعدّل التقييم لا المخاطر."]
         return "\n".join(lines)

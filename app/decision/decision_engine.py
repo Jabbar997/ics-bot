@@ -44,9 +44,13 @@ class DecisionEngine:
         self.decisions = DecisionRepository(session)
         # ICS-DOC-004 Phase 0: DQS weights may have been re-balanced by the
         # learning loop. Loaded once per engine; defaults when never tuned.
+        from app.learning.threshold_tuner import load_threshold
         from app.learning.weights import load_weights
 
         self.dqs_weights = load_weights(session)
+        # The cut-off itself is calibrated from rejected decisions; falls back
+        # to the configured value when it has never been tuned.
+        self.minimum_dqs = int(round(load_threshold(session, config.risk.minimum_dqs)))
 
     def _raw_context(self, signal, features, regime, dqs, risk) -> dict:
         return {
@@ -75,7 +79,7 @@ class DecisionEngine:
             features,
             regime,
             risk_ctx,
-            minimum_dqs=self.config.risk.minimum_dqs,
+            minimum_dqs=self.minimum_dqs,
             weights=self.dqs_weights,
         )
 
@@ -108,7 +112,7 @@ class DecisionEngine:
                 reason=dqs.reason,
                 market_regime=regime.regime.value,
                 rejected_opportunity=True,
-                rejection_reason=f"DQS {dqs.score} < {self.config.risk.minimum_dqs}.",
+                rejection_reason=f"DQS {dqs.score} < {self.minimum_dqs}.",
                 raw_context=self._raw_context(signal, features, regime, dqs, None),
                 created_at=ts,
             )
@@ -122,6 +126,7 @@ class DecisionEngine:
             self.config,
             features=features,
             kill_switch_active=self.kill_switch_active,
+            minimum_dqs=self.minimum_dqs,
         )
         if not risk.allowed:
             return self.decisions.record(

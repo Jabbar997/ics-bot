@@ -105,6 +105,7 @@ def validate_order(
     config: Config,
     features: Optional[FeatureSnapshot] = None,
     kill_switch_active: bool = False,
+    minimum_dqs: Optional[int] = None,
 ) -> RiskDecision:
     """Validate a candidate entry. Returns an actionable :class:`RiskDecision`."""
     violations: List[str] = []
@@ -120,13 +121,14 @@ def validate_order(
 
     risk = config.risk
 
-    # 1. DQS must exist and clear the threshold.
+    # 1. DQS must exist and clear the threshold (learned one when supplied).
+    min_dqs = risk.minimum_dqs if minimum_dqs is None else minimum_dqs
     if dqs is None:
         violations.append("DQS_MISSING")
         reasons.append("DQS مفقود.")
-    elif dqs.score < risk.minimum_dqs:
+    elif dqs.score < min_dqs:
         violations.append("DQS_BELOW_MIN")
-        reasons.append(f"DQS {dqs.score} < الحد الأدنى {risk.minimum_dqs}.")
+        reasons.append(f"DQS {dqs.score} < الحد الأدنى {min_dqs}.")
 
     # 2. Kill switch.
     if kill_switch_active:

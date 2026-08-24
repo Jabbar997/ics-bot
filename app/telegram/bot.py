@@ -323,13 +323,48 @@ class ICSBot:
             log.exception("Scheduled learning cycle failed")
 
     def _run_learning_cycle(self) -> str:
-        """Blocking half of the learning job (DB + optional price fetches)."""
+        """Blocking half of the learning job (DB + price fetches).
+
+        Fetches the watchlist once and reuses it for three things: scoring the
+        decisions that were rejected, measuring the market's own base rate, and
+        calibrating the DQS cut-off against it. Without that base rate the
+        threshold tuner deliberately refuses to move — in a rising market every
+        band looks profitable, and comparing to zero would lower the bar forever.
+        """
         from app.db.database import session_scope
+        from app.learning.counterfactuals import compute_baseline
         from app.learning.feedback_loop import run_feedback_cycle
 
+        frames = {}
+        baseline = None
+        try:
+            from app.data.market_data import fetch_watchlist
+
+            symbols = list(dict.fromkeys(
+                self.config.watchlist + [self.config.benchmark.symbol]
+            ))
+            frames = fetch_watchlist(symbols, period="2y").frames
+            baseline, _hit = compute_baseline(frames, warmup=0)
+        except Exception:
+            log.exception("Could not build the market baseline; threshold stays put.")
+
         with session_scope() as s:
-            result = run_feedback_cycle(s)
+            result = run_feedback_cycle(
+                s,
+                rejection_price_provider=lambda t: frames.get(t),
+                baseline_return=baseline,
+                minimum_dqs=self.config.risk.minimum_dqs,
+            )
         lines = ["🧠 دورة تعلّم ICS الأسبوعية", "", result.summary()]
+        if result.rejections_scored:
+            lines.append(f"قرارات مرفوضة قِيست مقابل السوق: {result.rejections_scored:,}")
+        t = getattr(result, "threshold", None)
+        if t is not None and getattr(t, "applied", False):
+            lines += [
+                "",
+                f"عتبة DQS: {t.current:.0f} ← {t.proposed:.0f}",
+                f"  {t.reason}",
+            ]
         if result.applied:
             lines += ["", "الأوزان الجديدة:"]
             lines += [f"  • {k}: {v:.2f}" for k, v in result.weights_after.items()]

@@ -29,6 +29,11 @@ from app.learning.counterfactuals import (
     record_rejected_outcomes,
 )
 from app.learning.outcomes import load_outcomes, record_outcomes
+from app.learning.threshold_tuner import (
+    apply_threshold,
+    load_threshold,
+    propose_threshold,
+)
 from app.learning.weights import load_weights, save_weights
 from app.logging_config import get_logger
 
@@ -59,6 +64,7 @@ class FeedbackResult:
     # Counterfactual side: what the market did after the system said no.
     rejections_scored: int = 0
     calibration: object = None
+    threshold: object = None
 
     def summary(self) -> str:
         head = "تم تحديث الأوزان" if self.applied else "لم تُحدَّث الأوزان"
@@ -212,6 +218,8 @@ def run_feedback_cycle(
     max_shift_points: float = MAX_SHIFT_POINTS,
     price_provider=None,
     rejection_price_provider=None,
+    baseline_return: Optional[float] = None,
+    minimum_dqs: Optional[int] = None,
 ) -> FeedbackResult:
     """Run one weekly cycle. Always writes exactly one LearningEvent."""
     record_outcomes(session, price_provider=price_provider)
@@ -219,9 +227,19 @@ def run_feedback_cycle(
     # is: rejections outnumber closed trades by roughly 40 to 1.
     scored = 0
     calibration = None
+    threshold = None
     try:
         scored = len(record_rejected_outcomes(session, price_provider=rejection_price_provider))
         calibration = analyze_calibration(session)
+        # The cut-off is calibrated from the near-miss band, judged against the
+        # market's own base rate — never against zero.
+        if baseline_return is not None and minimum_dqs is not None:
+            threshold = apply_threshold(
+                session,
+                propose_threshold(
+                    session, load_threshold(session, minimum_dqs), baseline_return
+                ),
+            )
     except Exception:
         log.exception("Counterfactual scoring failed; continuing with taken trades only.")
     outcomes = load_outcomes(session)
@@ -235,7 +253,7 @@ def run_feedback_cycle(
             correlations={}, before=before, after=before, max_shift_pct=max_shift_points,
         )
         log.info("Feedback cycle skipped: %s", reason)
-        return FeedbackResult(False, reason, n, {}, before, before, scored, calibration)
+        return FeedbackResult(False, reason, n, {}, before, before, scored, calibration, threshold)
 
     correlations = compute_correlations(outcomes)
     if all(v is None for v in correlations.values()):
@@ -244,7 +262,7 @@ def run_feedback_cycle(
             session, event_type="skipped", applied=False, trades=n, reason=reason,
             correlations=correlations, before=before, after=before, max_shift_pct=max_shift_points,
         )
-        return FeedbackResult(False, reason, n, correlations, before, before, scored, calibration)
+        return FeedbackResult(False, reason, n, correlations, before, before, scored, calibration, threshold)
 
     after = propose_weights(before, correlations, max_shift_points=max_shift_points)
     save_weights(session, after)
@@ -254,4 +272,4 @@ def run_feedback_cycle(
         correlations=correlations, before=before, after=after, max_shift_pct=max_shift_points,
     )
     log.info("Feedback cycle applied: %s", reason)
-    return FeedbackResult(True, reason, n, correlations, before, after, scored, calibration)
+    return FeedbackResult(True, reason, n, correlations, before, after, scored, calibration, threshold)
