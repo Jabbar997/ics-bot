@@ -243,8 +243,55 @@ class CommandService:
                 lines.append(f"  {mark} {ts:%Y-%m-%d} | {etype} | صفقات {trades}")
                 if reason:
                     lines.append(f"     {reason}")
+        lines += self._calibration_lines()
         lines += ["", "تداول ورقي فقط — التعلّم يعدّل التقييم لا المخاطر."]
         return "\n".join(lines)
+
+    # -- filter calibration from rejected decisions ----------------------- #
+    AR_CATEGORY = {
+        "strategy_filter": "فلاتر الاستراتيجيات",
+        "dqs_below_threshold": "عتبة DQS",
+        "slots_full": "امتلاء الخانات",
+        "already_holding": "مركز مفتوح",
+        "risk_limit": "حدود المخاطر",
+        "other": "أخرى",
+    }
+
+    def _calibration_lines(self) -> list:
+        """What the market did after the system said no."""
+        from app.learning.counterfactuals import LEARNABLE, analyze_calibration
+
+        try:
+            with session_scope() as s:
+                rep = analyze_calibration(s)
+        except Exception:
+            return []
+
+        if not rep.total:
+            return ["", "معايرة الفلاتر: لا قرارات مرفوضة مُقاسة بعد."]
+
+        out = [
+            "",
+            f"📐 معايرة الفلاتر ({rep.total:,} قرارًا مرفوضًا، أفق {rep.horizon_days} أيام):",
+        ]
+        for cat, stat in sorted(rep.by_category.items(), key=lambda kv: -kv[1].n):
+            if cat not in LEARNABLE:
+                continue
+            name = self.AR_CATEGORY.get(cat, cat)
+            out.append(
+                f"  • {name}: {stat.n:,} | صواب {stat.hit_rate*100:.0f}% | "
+                f"متوسط الحركة بعده {stat.mean_forward_return*100:+.2f}%"
+            )
+            out.append(f"     {stat.verdict}")
+
+        if rep.slots_full_n:
+            out += [
+                "",
+                f"تكلفة سقف المراكز: {rep.slots_full_n:,} فرصة فاتت، "
+                f"متوسط حركتها {rep.slots_full_mean_return*100:+.2f}%",
+            ]
+        out.append("  (قياس معايرة — ليس ربحًا فائتًا: أخذها كان سيغيّر ما بعدها)")
+        return out
 
     def health(self) -> str:
         """v1.1 health check. Never includes the DB URL or any secret."""

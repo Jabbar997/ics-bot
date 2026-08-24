@@ -366,6 +366,47 @@ class ModelTrainingRun(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
+class RejectedOutcome(Base):
+    """What actually happened after the system said "no".
+
+    The engine records ~97% of its decisions as rejections and then learns from
+    none of them. Each rejection carries the full feature and DQS context at the
+    moment of the decision, so the market itself can answer the question the
+    system never asked: *did that filter save money, or cost it?*
+
+    **Methodological limit, deliberately encoded here.** ``forward_return`` is a
+    counterfactual, not foregone profit: taking the trade would have consumed a
+    slot and changed every later decision. These rows are for calibrating
+    filters and thresholds — never for claiming a return we "would have made".
+    """
+
+    __tablename__ = "rejected_outcomes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, index=True)
+    decision_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("decisions.id"), index=True, nullable=True, unique=True
+    )
+    ticker: Mapped[str] = mapped_column(String(20), index=True)
+    strategy: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    rejected_at: Mapped[Optional[datetime]] = mapped_column(DateTime, index=True, nullable=True)
+
+    # Why the system said no — the axis the calibration analysis groups on.
+    category: Mapped[str] = mapped_column(String(30), index=True)
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    dqs_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    dqs_components_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+
+    # What the market did afterwards.
+    horizon_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    forward_return: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)
+    forward_mfe: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)
+    forward_mae: Mapped[Optional[float]] = mapped_column(Pct, nullable=True)
+    # True when saying no avoided a loss (or avoided a move worse than the stop).
+    rejection_helped: Mapped[Optional[bool]] = mapped_column(Boolean, index=True, nullable=True)
+
+
 class LearningEvent(Base):
     """Immutable record of one feedback-loop cycle.
 
