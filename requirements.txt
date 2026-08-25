@@ -32,13 +32,12 @@ APScheduler>=3.10
 scipy==1.17.1
 
 # --- Machine learning (ICS-DOC-004 Phase 1) ---
-# LightGBM: CPU-only gradient boosting, light enough for the current Render worker.
-# optuna: bounded Bayesian tuning, hard cap of 100 trials per monthly cycle.
-# All pinned exactly; shadow mode only until the DSR / 3-window gate is passed.
-lightgbm==4.7.0
-scikit-learn==1.9.0
-joblib==1.5.3
-optuna==4.9.0
+# NOT installed here on purpose. lightgbm + scikit-learn + optuna add hundreds of
+# megabytes to the build, and the live bot never imports them: the Phase 1 model
+# is shadow-only and did not pass its activation gate. They live in
+# requirements-ml.txt and are imported lazily inside app/ml/, so the deployed
+# worker stays small and the learning loop (which needs only scipy) is unaffected.
+#     pip install -r requirements-ml.txt   # to train or evaluate the model
 
 # --- Testing ---
 pytest>=7.4

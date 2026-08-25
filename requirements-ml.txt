@@ -1,0 +1,16 @@
+# ICS-DOC-004 Phase 1 — machine-learning extras.
+#
+# Deliberately separate from requirements.txt. The deployed Telegram worker never
+# imports these: the model runs in shadow mode only and has not passed its
+# activation gate, and every import inside app/ml/ is lazy. Installing them on
+# the worker only made the build heavier — and a failed build silently keeps the
+# previous release running, which is exactly how a shipped fix went unnoticed
+# for a day.
+#
+# Install locally (or in a training job) with:
+#     pip install -r requirements.txt -r requirements-ml.txt
+
+lightgbm==4.7.0
+scikit-learn==1.9.0
+joblib==1.5.3
+optuna==4.9.0
