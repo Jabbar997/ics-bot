@@ -51,3 +51,23 @@ def test_start_still_carries_the_safety_notice(db_url):
 def test_bot_registers_exactly_the_advertised_commands():
     """No orphan handlers, no advertised-but-unbound commands."""
     assert _registered_names() == set(ALL_COMMANDS)
+
+
+def test_learning_states_the_cap_in_points_not_percent():
+    """ICS-DOC-004 rejects the relative reading; the display must not reinstate it.
+
+    The cap is +/-5 absolute points (25 may reach 30). Rendering it as "±5%"
+    told the user the opposite of what the code does.
+    """
+    from app.config import load_config
+    from app.db import database
+    from app.learning.feedback_loop import MAX_SHIFT_POINTS
+    from app.telegram.commands import CommandService
+
+    database.init_engine("sqlite:///:memory:", force_reset=True)
+    database.create_all()
+    text = CommandService(load_config()).learning()
+
+    assert f"±{MAX_SHIFT_POINTS:.0f} نقاط" in text
+    assert f"±{MAX_SHIFT_POINTS}%" not in text
+    assert "±5%" not in text

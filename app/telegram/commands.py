@@ -230,7 +230,7 @@ class CommandService:
         from sqlalchemy import select
 
         from app.db.models import DecisionOutcome, LearningEvent
-        from app.learning.feedback_loop import MAX_SHIFT_PCT, MIN_CLOSED_TRADES
+        from app.learning.feedback_loop import MAX_SHIFT_POINTS, MIN_CLOSED_TRADES
         from app.learning.weights import load_weights
 
         with session_scope() as s:
@@ -256,7 +256,9 @@ class CommandService:
         lines += [
             "",
             f"صفقات مغلقة مُسجَّلة: {n_outcomes} (الحد الأدنى للتعديل: {MIN_CLOSED_TRADES})",
-            f"سقف التعديل لكل مكوّن في الدورة: ±{MAX_SHIFT_PCT}%",
+            # Points, not percent — ICS-DOC-004 rejects the relative reading
+            # explicitly, and "±5%" here said the opposite of what the code does.
+            f"سقف التعديل لكل مكوّن في الدورة: ±{MAX_SHIFT_POINTS:.0f} نقاط",
             "",
         ]
         if not rows:
@@ -299,7 +301,11 @@ class CommandService:
             return []
 
         if not rep.total:
-            return ["", "معايرة الفلاتر: لا قرارات مرفوضة مُقاسة بعد."]
+            return [
+                "",
+                "معايرة الفلاتر: لا قرارات مرفوضة مُقاسة بعد.",
+                "  (تُقاس تلقائيًا كل جمعة، أو فورًا بأمر seed-learning)",
+            ]
 
         out = [
             "",
