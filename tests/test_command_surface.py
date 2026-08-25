@@ -71,3 +71,32 @@ def test_learning_states_the_cap_in_points_not_percent():
     assert f"±{MAX_SHIFT_POINTS:.0f} نقاط" in text
     assert f"±{MAX_SHIFT_POINTS}%" not in text
     assert "±5%" not in text
+
+
+# --------------------------------------------------------------------------- #
+# CLI surface
+# --------------------------------------------------------------------------- #
+def test_every_cli_command_is_accepted_by_the_parser():
+    """A command that main() dispatches must be reachable from the parser.
+
+    `seed-learning` shipped with a handler and a dispatch branch but was left out
+    of the hand-maintained choices list, so it was unreachable in production
+    while every unit test still passed.
+    """
+    from app.main import COMMANDS, build_parser
+
+    parser = build_parser()
+    for name in COMMANDS:
+        args = parser.parse_args([name])
+        assert args.command == name
+
+
+def test_parser_choices_and_dispatch_do_not_drift():
+    """Both directions: nothing dispatched is unreachable, nothing offered is dead."""
+    import inspect
+
+    from app.main import COMMANDS, main
+
+    source = inspect.getsource(main)
+    for name in COMMANDS:
+        assert f'"{name}"' in source, f"{name} is offered but never dispatched"

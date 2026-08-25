@@ -432,11 +432,28 @@ def run_demo(config: Config) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Every subcommand the CLI accepts. `build_parser` takes its choices from here
+# and `main` dispatches from here, so a command can no longer be implemented and
+# then be unreachable because a hand-maintained choices list was not updated —
+# which is exactly how `seed-learning` shipped broken.
+COMMANDS = (
+    "init-db",
+    "daily",
+    "weekly",
+    "backtest",
+    "bot",
+    "scheduler",
+    "demo",
+    "ml-shadow",
+    "seed-learning",
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="ics", description="Investment Command System (paper-only).")
     p.add_argument(
         "command",
-        choices=["init-db", "daily", "weekly", "backtest", "bot", "scheduler", "demo", "ml-shadow"],
+        choices=list(COMMANDS),
     )
     p.add_argument("--config", default=None, help="Path to config.yaml")
     p.add_argument("--send", action="store_true", help="Send report to Telegram")
