@@ -64,6 +64,45 @@ def categorize_rejection(reason: Optional[str], violation_details: Optional[str]
     return CAT_STRATEGY_FILTER
 
 
+BASELINE_RETURN_KEY = "market_baseline_return"
+BASELINE_HIT_KEY = "market_baseline_hit_rate"
+BASELINE_AT_KEY = "market_baseline_measured_at"
+
+
+def save_baseline(session, mean_return: float, hit_rate: Optional[float] = None) -> None:
+    """Persist the market's own forward return so later reads can judge against it.
+
+    Computing this needs the whole price history, which /learning must not do on
+    every invocation. Without a stored value the verdicts degrade to "no baseline
+    to compare against" — numbers shown but deliberately not judged.
+    """
+    from datetime import datetime as _dt
+
+    from app.db.repositories import SystemConfigRepository
+
+    cfg = SystemConfigRepository(session)
+    cfg.set(BASELINE_RETURN_KEY, repr(float(mean_return)))
+    if hit_rate is not None:
+        cfg.set(BASELINE_HIT_KEY, repr(float(hit_rate)))
+    cfg.set(BASELINE_AT_KEY, _dt.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+
+
+def load_baseline(session):
+    """(mean_return, hit_rate) as last measured, or (None, None)."""
+    from app.db.repositories import SystemConfigRepository
+
+    cfg = SystemConfigRepository(session)
+
+    def _f(key):
+        raw = cfg.get(key)
+        try:
+            return float(raw) if raw else None
+        except (TypeError, ValueError):
+            return None
+
+    return _f(BASELINE_RETURN_KEY), _f(BASELINE_HIT_KEY)
+
+
 # A filter has to beat the market by at least this much to count as skill
 # rather than noise (mean forward return, in fraction terms).
 EDGE_TOLERANCE = 0.0025
@@ -279,6 +318,11 @@ def analyze_calibration(
     baseline_hit_rate: Optional[float] = None,
 ) -> CalibrationReport:
     """How well each rejection reason actually predicted the market."""
+    if baseline_return is None:
+        baseline_return, stored_hit = load_baseline(session)
+        if baseline_hit_rate is None:
+            baseline_hit_rate = stored_hit
+
     rows = [
         r for r in session.scalars(select(RejectedOutcome))
         if r.forward_return is not None

@@ -254,3 +254,54 @@ def test_threshold_calibration_only_uses_learnable_rejections(db_url):
     assert rows[0]["n"] >= rows[1]["n"] >= rows[2]["n"]  # higher bar, fewer pass
     # The 85-DQS capacity rejections must not leak into this analysis.
     assert rows[-1]["n"] < 20
+
+
+# --------------------------------------------------------------------------- #
+# baseline persistence
+# --------------------------------------------------------------------------- #
+def test_baseline_survives_so_verdicts_can_be_rendered(db_url):
+    """Measuring the base rate needs the whole price history.
+
+    /learning cannot refetch that on every invocation, so the value is stored
+    when it is measured. Without this the calibration showed real numbers and
+    then refused to judge them: "no baseline to compare against".
+    """
+    from app.learning.counterfactuals import load_baseline, save_baseline
+
+    with session_scope() as s:
+        assert load_baseline(s) == (None, None)
+        save_baseline(s, 0.0106, 0.58)
+    with session_scope() as s:
+        mean, hit = load_baseline(s)
+    assert mean == pytest.approx(0.0106)
+    assert hit == pytest.approx(0.58)
+
+
+def test_calibration_uses_the_stored_baseline_without_being_told(db_url):
+    from app.learning.counterfactuals import save_baseline
+
+    with session_scope() as s:
+        _seed_mixed(s, n_filter=40, n_slots=0)
+    old = (datetime.utcnow() - timedelta(days=120)).strftime("%Y-%m-%d")
+    with session_scope() as s:
+        record_rejected_outcomes(s, price_provider=lambda t: _prices(start=old, drift=-0.01))
+        # No baseline stored yet -> refuses to judge.
+        assert "لا معدّل أساس" in analyze_calibration(s).by_category[CAT_STRATEGY_FILTER].verdict
+        save_baseline(s, 0.0106, 0.58)
+        # Stored -> judges without the caller passing anything.
+        stat = analyze_calibration(s).by_category[CAT_STRATEGY_FILTER]
+    assert stat.edge is not None
+    assert "لا معدّل أساس" not in stat.verdict
+
+
+def test_an_explicit_baseline_overrides_the_stored_one(db_url):
+    from app.learning.counterfactuals import save_baseline
+
+    with session_scope() as s:
+        _seed_mixed(s, n_filter=40, n_slots=0)
+    old = (datetime.utcnow() - timedelta(days=120)).strftime("%Y-%m-%d")
+    with session_scope() as s:
+        record_rejected_outcomes(s, price_provider=lambda t: _prices(start=old, drift=0.0))
+        save_baseline(s, 0.99, 0.58)  # deliberately absurd
+        stat = analyze_calibration(s, baseline_return=0.0).by_category[CAT_STRATEGY_FILTER]
+    assert stat.baseline_return == pytest.approx(0.0)

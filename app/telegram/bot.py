@@ -344,7 +344,14 @@ class ICSBot:
                 self.config.watchlist + [self.config.benchmark.symbol]
             ))
             frames = fetch_watchlist(symbols, period="2y").frames
-            baseline, _hit = compute_baseline(frames, warmup=0)
+            baseline, hit = compute_baseline(frames, warmup=0)
+            # Store it so /learning can judge without refetching everything.
+            from app.db.database import session_scope as _scope
+            from app.learning.counterfactuals import save_baseline
+
+            if baseline is not None:
+                with _scope() as _s:
+                    save_baseline(_s, baseline, hit)
         except Exception:
             log.exception("Could not build the market baseline; threshold stays put.")
 

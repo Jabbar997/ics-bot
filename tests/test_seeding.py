@@ -85,3 +85,32 @@ def test_seeding_reports_the_market_baseline(db_url, synthetic_market, tmp_path)
         report = seed_from_backtest(s, cfg, synthetic_market,
                                     backtest_db=f"sqlite:///{tmp_path / 'e.db'}")
     assert report.baseline_return is not None
+
+
+def test_reseeding_repairs_a_missing_baseline_without_reimporting(db_url, synthetic_market, tmp_path):
+    """The live database was seeded before baselines were persisted.
+
+    Running the command again must not duplicate 10k rows, but it must fill in
+    the baseline — otherwise every verdict stays stuck on "no baseline".
+    """
+    from app.learning.counterfactuals import BASELINE_RETURN_KEY, load_baseline
+    from app.db.repositories import SystemConfigRepository
+
+    cfg = load_config()
+    with session_scope() as s:
+        first = seed_from_backtest(s, cfg, synthetic_market,
+                                   backtest_db=f"sqlite:///{tmp_path / 'f.db'}")
+    # Simulate the pre-fix state: rows present, baseline absent.
+    with session_scope() as s:
+        SystemConfigRepository(s).set(BASELINE_RETURN_KEY, "")
+    with session_scope() as s:
+        assert load_baseline(s)[0] is None
+
+    with session_scope() as s:
+        again = seed_from_backtest(s, cfg, synthetic_market,
+                                   backtest_db=f"sqlite:///{tmp_path / 'g.db'}")
+    assert again.skipped is True
+    assert again.imported == 0
+    with session_scope() as s:
+        assert load_baseline(s)[0] is not None            # repaired
+        assert int(s.scalar(func.count(RejectedOutcome.id)) or 0) == first.imported

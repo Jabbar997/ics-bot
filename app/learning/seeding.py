@@ -77,12 +77,28 @@ def seed_from_backtest(
     """
     from app.backtesting.backtester import Backtester
     from app.db import database
-    from app.learning.counterfactuals import compute_baseline, record_rejected_outcomes
+    from app.learning.counterfactuals import (
+        compute_baseline,
+        load_baseline,
+        record_rejected_outcomes,
+        save_baseline,
+    )
 
     if already_seeded(target_session) and not force:
+        # Re-running must not re-import, but it should still repair a missing
+        # baseline: without one every verdict degrades to "nothing to compare
+        # against", and measuring it here costs one pass over data already in
+        # hand — no backtest, no refetch.
+        mean, hit = load_baseline(target_session)
+        if mean is None:
+            mean, hit = compute_baseline(data, horizon=horizon_days)
+            if mean is not None:
+                save_baseline(target_session, mean, hit)
+                log.info("Baseline was missing; measured and stored it.")
         return SeedReport(
             skipped=True,
             reason="سبق البذر؛ استخدم --force لإعادته.",
+            baseline_return=mean,
             total_after=int(target_session.scalar(func.count(RejectedOutcome.id)) or 0),
         )
 
@@ -124,6 +140,8 @@ def seed_from_backtest(
     with database.session_scope() as live:
         for row in rows:
             live.add(RejectedOutcome(decision_id=None, **row))
+        if baseline is not None:
+            save_baseline(live, baseline, _hit)
         cfg = SystemConfigRepository(live)
         cfg.set(SEEDED_KEY, datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
         cfg.set(SEEDED_COUNT_KEY, str(len(rows)))
