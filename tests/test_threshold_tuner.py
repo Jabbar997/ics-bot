@@ -18,6 +18,7 @@ from app.learning.threshold_tuner import (
     MAX_SHIFT_POINTS,
     MAX_THRESHOLD,
     MIN_BAND_SAMPLE,
+    MIN_NEW_EVIDENCE,
     MIN_THRESHOLD,
     apply_threshold,
     load_threshold,
@@ -178,3 +179,61 @@ def test_unchanged_proposal_is_not_applied(db_url):
         p = apply_threshold(s, propose_threshold(s, 70.0, baseline_return=BASE))
         assert p.applied is False
         assert load_threshold(s, 70) == 70.0
+
+
+# --------------------------------------------------------------------------- #
+# the new-evidence guard
+# --------------------------------------------------------------------------- #
+def test_threshold_does_not_drift_on_unchanged_evidence(db_url):
+    """The bug this guard exists for.
+
+    The cycle runs every Friday. Without a guard it re-reads the same rows each
+    time and walks the cut-off 2 points a week until it hits a bound — learning
+    from repetition rather than from anything new.
+    """
+    with session_scope() as s:
+        _seed(s, MIN_BAND_SAMPLE + 20, dqs=65, forward_return=BASE + 0.03)
+
+    # First cycle: real evidence, so it moves.
+    with session_scope() as s:
+        first = apply_threshold(s, propose_threshold(s, 70.0, baseline_return=BASE))
+    assert first.applied is True
+    assert first.proposed == pytest.approx(68.0)
+
+    # Four more cycles on the SAME data must change nothing at all.
+    for _ in range(4):
+        with session_scope() as s:
+            current = load_threshold(s, 70)
+            p = apply_threshold(s, propose_threshold(s, current, baseline_return=BASE))
+            assert p.applied is False
+            assert "أدلة جديدة" in p.reason
+
+    with session_scope() as s:
+        assert load_threshold(s, 70) == pytest.approx(68.0)  # still one move, not five
+
+
+def test_threshold_moves_again_once_new_evidence_arrives(db_url):
+    with session_scope() as s:
+        _seed(s, MIN_BAND_SAMPLE + 20, dqs=65, forward_return=BASE + 0.03)
+    with session_scope() as s:
+        apply_threshold(s, propose_threshold(s, 70.0, baseline_return=BASE))
+
+    # Enough genuinely new rejections to justify re-examining the cut-off.
+    with session_scope() as s:
+        _seed(s, MIN_NEW_EVIDENCE + 10, dqs=60, forward_return=BASE + 0.03)
+    with session_scope() as s:
+        current = load_threshold(s, 70)
+        p = apply_threshold(s, propose_threshold(s, current, baseline_return=BASE))
+    assert p.applied is True
+    assert p.new_evidence >= MIN_NEW_EVIDENCE
+    with session_scope() as s:
+        assert load_threshold(s, 70) == pytest.approx(66.0)
+
+
+def test_first_ever_move_needs_no_prior_evidence(db_url):
+    """A fresh database has no 'last change', so the guard must not block it."""
+    with session_scope() as s:
+        _seed(s, MIN_BAND_SAMPLE + 20, dqs=65, forward_return=BASE - 0.03)
+        p = propose_threshold(s, 70.0, baseline_return=BASE)
+    assert p.changed
+    assert p.new_evidence == p.total_evidence

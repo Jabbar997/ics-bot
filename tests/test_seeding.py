@@ -1,0 +1,87 @@
+"""Seeding the calibration tables from a historical backtest.
+
+The guarantee that matters: seeding gives the learner evidence without touching
+anything tradeable. Nothing about the portfolio, the cash, the positions or the
+audit invariant may change.
+"""
+from sqlalchemy import func, select
+
+from app.config import load_config
+from app.db.database import session_scope
+from app.db.models import (
+    AuditLog,
+    Decision,
+    PaperOrder,
+    PortfolioSnapshot,
+    Position,
+    RejectedOutcome,
+)
+from app.learning.seeding import already_seeded, seed_from_backtest
+
+
+def _counts(s):
+    return {
+        m.__name__: int(s.scalar(func.count(m.id)) or 0)
+        for m in (Decision, AuditLog, Position, PaperOrder, PortfolioSnapshot)
+    }
+
+
+def test_seeding_imports_outcomes_and_touches_nothing_tradeable(db_url, synthetic_market, tmp_path):
+    cfg = load_config()
+    with session_scope() as s:
+        before = _counts(s)
+        assert int(s.scalar(func.count(RejectedOutcome.id)) or 0) == 0
+
+    with session_scope() as s:
+        report = seed_from_backtest(
+            s, cfg, synthetic_market,
+            backtest_db=f"sqlite:///{tmp_path / 'seed_bt.db'}",
+        )
+    assert report.imported > 0
+    assert not report.skipped
+
+    with session_scope() as s:
+        after = _counts(s)
+        outcomes = list(s.scalars(select(RejectedOutcome)))
+
+    # The learner gained evidence...
+    assert len(outcomes) == report.imported
+    # ...and nothing tradeable moved.
+    assert after == before
+
+
+def test_seeded_rows_are_marked_historical(db_url, synthetic_market, tmp_path):
+    cfg = load_config()
+    with session_scope() as s:
+        seed_from_backtest(s, cfg, synthetic_market,
+                           backtest_db=f"sqlite:///{tmp_path / 'b.db'}")
+    with session_scope() as s:
+        rows = list(s.scalars(select(RejectedOutcome)))
+    # decision_id is null: the originating decision lives in the backtest DB, and
+    # importing its id would dangle a foreign key.
+    assert rows and all(r.decision_id is None for r in rows)
+    assert all(r.forward_return is not None for r in rows)
+
+
+def test_seeding_is_one_shot_unless_forced(db_url, synthetic_market, tmp_path):
+    cfg = load_config()
+    with session_scope() as s:
+        first = seed_from_backtest(s, cfg, synthetic_market,
+                                   backtest_db=f"sqlite:///{tmp_path / 'c.db'}")
+    with session_scope() as s:
+        assert already_seeded(s) is True
+        second = seed_from_backtest(s, cfg, synthetic_market,
+                                    backtest_db=f"sqlite:///{tmp_path / 'd.db'}")
+    assert second.skipped is True
+    assert second.imported == 0
+    with session_scope() as s:
+        assert int(s.scalar(func.count(RejectedOutcome.id)) or 0) == first.imported
+
+
+def test_seeding_reports_the_market_baseline(db_url, synthetic_market, tmp_path):
+    """The baseline must come with the seed — without it the tuner won't move."""
+    cfg = load_config()
+    with session_scope() as s:
+        report = seed_from_backtest(s, cfg, synthetic_market,
+                                    backtest_db=f"sqlite:///{tmp_path / 'e.db'}")
+    assert report.baseline_return is not None

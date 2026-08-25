@@ -308,6 +308,26 @@ def _send_telegram(config: Config, text: str) -> None:
 # --------------------------------------------------------------------------- #
 # Backtest
 # --------------------------------------------------------------------------- #
+def seed_learning(config: Config, period: Optional[str] = None, force: bool = False) -> None:
+    """Give the calibration a history to read instead of waiting months for one."""
+    from app.data.market_data import fetch_watchlist
+    from app.learning.seeding import seed_from_backtest
+
+    database.init_engine(config.env.database_url)
+    database.create_all()
+
+    period = period or f"{config.market.history_years}y"
+    symbols = list(dict.fromkeys(config.watchlist + [config.benchmark.symbol]))
+    log.info("Fetching %s of history for %d symbols...", period, len(symbols))
+    data = fetch_watchlist(symbols, period=period).frames
+
+    with database.session_scope() as s:
+        report = seed_from_backtest(s, config, data, force=force)
+    print(report.summary())
+    if report.baseline_return is not None:
+        print(f"معدّل أساس السوق: {report.baseline_return*100:+.2f}%")
+
+
 def run_backtest(config: Config, period: Optional[str] = None) -> None:
     from app.backtesting.backtester import Backtester
     from app.backtesting.walk_forward import split_dates
@@ -440,6 +460,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         run_daily_workflow(config, send_report=args.send, force=args.force)
     elif args.command == "weekly":
         run_weekly_workflow(config, send_report=args.send)
+    elif args.command == "seed-learning":
+        seed_learning(config, period=args.period, force=args.force)
     elif args.command == "backtest":
         run_backtest(config, period=args.period)
     elif args.command == "bot":

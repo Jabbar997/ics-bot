@@ -35,9 +35,15 @@ from app.logging_config import get_logger
 log = get_logger(__name__)
 
 THRESHOLD_KEY = "dqs_minimum"
+# How many scored rejections existed when the cut-off last moved. Without this
+# the weekly cycle re-reads the SAME evidence every Friday and walks the
+# threshold 2 points a week until it hits a bound — learning from repetition
+# rather than from anything new.
+EVIDENCE_KEY = "dqs_threshold_evidence_at_last_change"
 
 # --- bounds ---------------------------------------------------------------- #
 MIN_BAND_SAMPLE = 200   # near-miss rejections required before moving at all
+MIN_NEW_EVIDENCE = 150  # newly scored rejections required before moving *again*
 MAX_SHIFT_POINTS = 2.0  # per weekly cycle
 MIN_THRESHOLD = 60.0
 MAX_THRESHOLD = 85.0
@@ -57,6 +63,8 @@ class ThresholdProposal:
     edge: Optional[float] = None
     applied: bool = False
     reason: str = ""
+    total_evidence: int = 0
+    new_evidence: int = 0
 
     @property
     def changed(self) -> bool:
@@ -86,6 +94,21 @@ def reset_threshold(session, default: float) -> float:
     return save_threshold(session, default)
 
 
+def _total_scored(session) -> int:
+    """Every rejection scored so far — the yardstick for 'new evidence'."""
+    from sqlalchemy import func
+
+    return int(session.scalar(func.count(RejectedOutcome.id)) or 0)
+
+
+def _evidence_at_last_change(session) -> int:
+    raw = SystemConfigRepository(session).get(EVIDENCE_KEY)
+    try:
+        return int(raw) if raw else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _near_miss_band(session, current: float) -> List[RejectedOutcome]:
     """Learnable rejections scoring within BAND_WIDTH just below the cut-off."""
     low = current - BAND_WIDTH
@@ -105,13 +128,17 @@ def propose_threshold(
     *,
     min_sample: int = MIN_BAND_SAMPLE,
     max_shift: float = MAX_SHIFT_POINTS,
+    min_new_evidence: int = MIN_NEW_EVIDENCE,
 ) -> ThresholdProposal:
     """Bounded proposal for the DQS cut-off. Never applies anything itself."""
     band = _near_miss_band(session, current)
+    total = _total_scored(session)
+    seen = _evidence_at_last_change(session)
     proposal = ThresholdProposal(
         current=current, proposed=current,
         band_low=current - BAND_WIDTH, band_high=current,
         band_n=len(band), baseline_return=baseline_return,
+        total_evidence=total, new_evidence=max(0, total - seen),
     )
 
     if baseline_return is None:
@@ -120,6 +147,14 @@ def propose_threshold(
     if len(band) < min_sample:
         proposal.reason = (
             f"عيّنة النطاق {len(band)} < الحد الأدنى {min_sample}؛ لا تعديل."
+        )
+        return proposal
+    # Only move on evidence that did not exist last time. Re-reading the same
+    # rows every week is repetition, not learning.
+    if seen and proposal.new_evidence < min_new_evidence:
+        proposal.reason = (
+            f"أدلة جديدة {proposal.new_evidence} < الحد {min_new_evidence} "
+            "منذ آخر تعديل؛ لا تعديل."
         )
         return proposal
 
@@ -156,6 +191,14 @@ def propose_threshold(
 def apply_threshold(session, proposal: ThresholdProposal) -> ThresholdProposal:
     if proposal.changed:
         save_threshold(session, proposal.proposed)
+        # Remember how much evidence justified this move, so the next cycle needs
+        # genuinely new data before moving again.
+        SystemConfigRepository(session).set(
+            EVIDENCE_KEY, str(proposal.total_evidence or _total_scored(session))
+        )
         proposal.applied = True
-        log.info("DQS threshold: %.0f -> %.0f", proposal.current, proposal.proposed)
+        log.info(
+            "DQS threshold: %.0f -> %.0f (on %d new rejections)",
+            proposal.current, proposal.proposed, proposal.new_evidence,
+        )
     return proposal
