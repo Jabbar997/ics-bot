@@ -7,14 +7,20 @@ on *real* market data with no look-ahead. For calibrating filters and the DQS
 cut-off they are arguably better evidence than two months of a single bull
 market, because they span several regimes.
 
-**Only :class:`RejectedOutcome` rows are imported.** No decisions, no orders, no
-positions, no portfolio snapshots. Seeding therefore cannot alter the live
-portfolio, the cash balance, or the audit invariant — it only gives the
-calibration something to read.
+**Only outcome rows are imported** — :class:`RejectedOutcome` for the
+calibration and :class:`DecisionOutcome` for the weight loop. No decisions, no
+orders, no positions, no portfolio snapshots. Seeding therefore cannot alter the
+live portfolio, the cash balance, or the audit invariant; it only gives the two
+learning tracks something to read.
 
-Imported rows carry ``decision_id = None``: the originating decision lives in the
-backtest database and importing the id would dangle a foreign key. That null
-doubles as the marker for "historical, not live".
+Both tracks matter. Rejections calibrate the filters and the cut-off; closed
+trades drive the DQS component weights, and that loop needs 30 of them before it
+will move at all — a live system produces about 39 a year, so without seeding it
+sits idle for months while the other half learns.
+
+Imported rows carry ``decision_id = None`` (and ``position_id = None``): the
+originating rows live in the backtest database and importing their ids would
+dangle a foreign key. That null doubles as the marker for "historical, not live".
 
 **The multiplicity risk is real.** One historical dataset is one experiment. The
 threshold tuner's new-evidence guard is what stops the loop re-reading this seed
@@ -29,7 +35,7 @@ from typing import Dict, Optional
 from sqlalchemy import func, select
 
 from app.config import Config
-from app.db.models import RejectedOutcome
+from app.db.models import DecisionOutcome, RejectedOutcome
 from app.db.repositories import SystemConfigRepository
 from app.logging_config import get_logger
 
@@ -42,6 +48,7 @@ SEEDED_COUNT_KEY = "learning_seeded_count"
 @dataclass
 class SeedReport:
     imported: int = 0
+    closed_trades: int = 0
     skipped: bool = False
     reason: str = ""
     baseline_return: Optional[float] = None
@@ -51,8 +58,8 @@ class SeedReport:
         if self.skipped:
             return f"لم يُنفَّذ البذر — {self.reason}"
         return (
-            f"بُذرت {self.imported:,} نتيجة مرفوضة تاريخية "
-            f"(الإجمالي الآن {self.total_after:,})"
+            f"بُذرت {self.imported:,} نتيجة مرفوضة و{self.closed_trades:,} صفقة مغلقة "
+            f"(إجمالي الرفضات الآن {self.total_after:,})"
         )
 
 
@@ -83,6 +90,7 @@ def seed_from_backtest(
         record_rejected_outcomes,
         save_baseline,
     )
+    from app.learning.outcomes import record_outcomes
 
     if already_seeded(target_session) and not force:
         # Re-running must not re-import, but it should still repair a missing
@@ -114,6 +122,24 @@ def seed_from_backtest(
         record_rejected_outcomes(
             bt, horizon_days=horizon_days, price_provider=lambda t: data.get(t)
         )
+        # The other half of the loop: what the trades it DID take actually did.
+        record_outcomes(bt, price_provider=lambda tkr, a, b: data.get(tkr))
+        taken = [
+            {
+                "ticker": o.ticker,
+                "strategy": o.strategy,
+                "entry_at": o.entry_at,
+                "exit_at": o.exit_at,
+                "realized_return": o.realized_return,
+                "holding_period_days": o.holding_period_days,
+                "mfe": o.mfe,
+                "mae": o.mae,
+                "dqs_at_entry": o.dqs_at_entry,
+                "dqs_components_json": o.dqs_components_json,
+            }
+            for o in bt.scalars(select(DecisionOutcome))
+            if o.realized_return is not None and o.dqs_components_json
+        ]
         rows = [
             {
                 "ticker": r.ticker,
@@ -140,6 +166,8 @@ def seed_from_backtest(
     with database.session_scope() as live:
         for row in rows:
             live.add(RejectedOutcome(decision_id=None, **row))
+        for row in taken:
+            live.add(DecisionOutcome(decision_id=None, position_id=None, **row))
         if baseline is not None:
             save_baseline(live, baseline, _hit)
         cfg = SystemConfigRepository(live)
@@ -148,7 +176,11 @@ def seed_from_backtest(
         live.flush()
         total = int(live.scalar(func.count(RejectedOutcome.id)) or 0)
 
-    log.info("Seeding complete: %d historical outcomes imported.", len(rows))
+    log.info(
+        "Seeding complete: %d rejections and %d closed trades imported.",
+        len(rows), len(taken),
+    )
     return SeedReport(
-        imported=len(rows), baseline_return=baseline, total_after=total
+        imported=len(rows), closed_trades=len(taken),
+        baseline_return=baseline, total_after=total,
     )

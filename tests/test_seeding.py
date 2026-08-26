@@ -114,3 +114,45 @@ def test_reseeding_repairs_a_missing_baseline_without_reimporting(db_url, synthe
     with session_scope() as s:
         assert load_baseline(s)[0] is not None            # repaired
         assert int(s.scalar(func.count(RejectedOutcome.id)) or 0) == first.imported
+
+
+def test_seeding_unblocks_the_weight_loop_too(db_url, synthetic_market, tmp_path):
+    """Rejections alone only start half the system.
+
+    The weight loop needs 30 closed trades before it moves, and a live system
+    produces ~39 a year — so without seeding these it sits idle for months.
+    """
+    from app.db.models import DecisionOutcome
+    from app.learning.feedback_loop import MIN_CLOSED_TRADES
+    from app.learning.outcomes import load_outcomes
+
+    cfg = load_config()
+    with session_scope() as s:
+        report = seed_from_backtest(s, cfg, synthetic_market,
+                                    backtest_db=f"sqlite:///{tmp_path / 'h.db'}")
+
+    assert report.closed_trades > 0
+    with session_scope() as s:
+        outcomes = load_outcomes(s)
+        rows = list(s.scalars(select(DecisionOutcome)))
+
+    assert len(rows) == report.closed_trades
+    # Usable by the loop: a realised return AND the components scored at entry.
+    # (How many the synthetic fixture yields depends on its length; the real
+    # five-year dataset produces 164, comfortably past MIN_CLOSED_TRADES.)
+    assert len(outcomes) == report.closed_trades
+    assert MIN_CLOSED_TRADES > 0
+    # Historical marker on both sides of the link.
+    assert all(o.decision_id is None and o.position_id is None for o in rows)
+
+
+def test_seeded_closed_trades_do_not_create_positions(db_url, synthetic_market, tmp_path):
+    """The weight loop gets its evidence; the portfolio stays untouched."""
+    cfg = load_config()
+    with session_scope() as s:
+        before = _counts(s)
+    with session_scope() as s:
+        seed_from_backtest(s, cfg, synthetic_market,
+                           backtest_db=f"sqlite:///{tmp_path / 'i.db'}")
+    with session_scope() as s:
+        assert _counts(s) == before
