@@ -193,8 +193,13 @@ def _forward_metrics(
     frame: pd.DataFrame, at: datetime, horizon: int
 ) -> Optional[tuple[float, float, float]]:
     """(forward_return, mfe, mae) from the bar after ``at``, over ``horizon`` bars."""
-    idx = frame.index
-    pos = int(idx.searchsorted(pd.Timestamp(at), "right"))
+    # Compare at nanosecond resolution. pandas >= 3 keeps the coarser unit the data
+    # source gave the index (seconds / milliseconds), and searchsorted refuses to
+    # round a timestamp that has microseconds into it ("Cannot losslessly convert
+    # units"). Live decisions are stamped with microseconds, so without this the
+    # whole scoring batch aborted on the first live rejection.
+    idx = pd.DatetimeIndex(frame.index).as_unit("ns")
+    pos = int(idx.searchsorted(pd.Timestamp(at).as_unit("ns"), "right"))
     if pos >= len(idx):
         return None  # rejection is newer than the data
     end = min(pos + horizon, len(idx) - 1)
