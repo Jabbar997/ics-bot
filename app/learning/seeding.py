@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 
 from app.config import Config
 from app.db.models import DecisionOutcome, RejectedOutcome
@@ -67,11 +67,23 @@ def already_seeded(session) -> bool:
     return bool(SystemConfigRepository(session).get(SEEDED_KEY))
 
 
+def _is_seeded_trade():
+    """A seeded closed trade has neither a decision nor a position.
+
+    ``decision_id`` alone is not enough: ``record_outcomes`` leaves it NULL for a
+    live trade whose BUY decision cannot be found (e.g. a core-allocation
+    position) but always sets ``position_id``. Seeded rows come from another
+    database, so they carry neither.
+    """
+    return and_(DecisionOutcome.decision_id.is_(None), DecisionOutcome.position_id.is_(None))
+
+
 def _seeded_counts(session) -> tuple:
     """(seeded rejections, seeded closed trades) already in the database.
 
-    Seeded rows are the ones with no originating decision (``decision_id`` is
-    NULL — see the module docstring); live rows always have one. Counting per
+    Seeded rejections have no originating decision (``decision_id`` is NULL — see
+    the module docstring); live ones always have one. Seeded trades are told apart
+    by :func:`_is_seeded_trade`. Counting per
     table is what lets a database seeded by an older version (rejections only)
     pick up the half it is missing instead of being skipped, or duplicated by
     ``--force``.
@@ -80,7 +92,7 @@ def _seeded_counts(session) -> tuple:
         select(func.count(RejectedOutcome.id)).where(RejectedOutcome.decision_id.is_(None))
     ) or 0)
     trades = int(session.scalar(
-        select(func.count(DecisionOutcome.id)).where(DecisionOutcome.decision_id.is_(None))
+        select(func.count(DecisionOutcome.id)).where(_is_seeded_trade())
     ) or 0)
     return rejections, trades
 
@@ -196,7 +208,7 @@ def seed_from_backtest(
         if force and want_rejections:
             live.execute(delete(RejectedOutcome).where(RejectedOutcome.decision_id.is_(None)))
         if force and want_trades:
-            live.execute(delete(DecisionOutcome).where(DecisionOutcome.decision_id.is_(None)))
+            live.execute(delete(DecisionOutcome).where(_is_seeded_trade()))
         for row in rows:
             live.add(RejectedOutcome(decision_id=None, **row))
         for row in taken:

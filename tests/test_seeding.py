@@ -239,3 +239,43 @@ def test_force_never_deletes_live_outcomes(db_url, synthetic_market, tmp_path):
     with session_scope() as s:
         assert s.scalar(select(func.count(DecisionOutcome.id)).where(DecisionOutcome.decision_id.is_not(None))) == 1
         assert s.scalar(select(func.count(RejectedOutcome.id)).where(RejectedOutcome.decision_id.is_not(None))) == 1
+
+
+def _add_live_outcome_without_decision(s):
+    """What record_outcomes writes for a live trade whose BUY decision is not found
+    (e.g. a core-allocation position): decision_id NULL, but a real position_id."""
+    s.add(DecisionOutcome(
+        decision_id=None, position_id="live-core-position", ticker="SPY", strategy="core",
+        realized_return=0.03, dqs_components_json={"strategy_alignment": 20},
+    ))
+
+
+def test_a_live_outcome_without_a_decision_is_not_mistaken_for_a_seeded_trade(
+    db_url, synthetic_market, tmp_path
+):
+    """Otherwise it would count as 'trades already seeded' and block the import."""
+    cfg = load_config()
+    with session_scope() as s:
+        _add_live_outcome_without_decision(s)
+    with session_scope() as s:
+        report = _seed(s, cfg, synthetic_market, tmp_path, "g.db")
+    assert report.closed_trades > 0           # the missing seed was still imported
+    with session_scope() as s:
+        live = s.scalar(select(func.count(DecisionOutcome.id)).where(
+            DecisionOutcome.position_id == "live-core-position"))
+        assert live == 1
+
+
+def test_force_keeps_a_live_outcome_that_has_no_decision(db_url, synthetic_market, tmp_path):
+    cfg = load_config()
+    with session_scope() as s:
+        first = _seed(s, cfg, synthetic_market, tmp_path, "h.db")
+        _add_live_outcome_without_decision(s)
+    with session_scope() as s:
+        _seed(s, cfg, synthetic_market, tmp_path, "i.db", force=True)
+    with session_scope() as s:
+        assert s.scalar(select(func.count(DecisionOutcome.id)).where(
+            DecisionOutcome.position_id == "live-core-position")) == 1
+        seeded = s.scalar(select(func.count(DecisionOutcome.id)).where(
+            DecisionOutcome.decision_id.is_(None), DecisionOutcome.position_id.is_(None)))
+        assert seeded == first.closed_trades
