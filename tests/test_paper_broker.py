@@ -31,7 +31,6 @@ def test_buy_caps_quantity_to_available_cash(db_url):
         broker.place_buy_order("AAPL", quantity=100, price=190.0)
         cash = float(broker.calculate_cash())
         assert cash >= -1e-6  # never goes negative (no leverage / margin)
-        invested = float(broker.calculate_invested_value({"AAPL": 190.0}))
         total = float(broker.calculate_total_value({"AAPL": 190.0}))
         assert abs(total - cfg.initial_capital) < 1e-2
 

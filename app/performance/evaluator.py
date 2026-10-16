@@ -7,9 +7,9 @@ that the reporting layer and the ``performance_reports`` table both consume.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 TRADING_DAYS = 252
 

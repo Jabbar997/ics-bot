@@ -173,7 +173,6 @@ class Backtester:
 
     def _simulate(self, session, features, spy_feat, calendar, first_i, last_i) -> BacktestResult:
         broker = PaperBroker(session, self.config)
-        snaps_repo = PortfolioSnapshotRepository(session)
         # In-memory equity curve (avoids re-querying the snapshots table).
         equity: List[float] = []
         positions_repo = PositionRepository(session)

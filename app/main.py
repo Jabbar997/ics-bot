@@ -26,7 +26,6 @@ import pandas as pd
 from app.config import Config, load_config
 from app.db import database
 from app.db.repositories import (
-    KillSwitchRepository,
     PortfolioSnapshotRepository,
     PositionRepository,
     RegimeRepository,

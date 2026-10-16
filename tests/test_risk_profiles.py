@@ -5,7 +5,6 @@ and weak-bull are already blocked by the defensive gate, and bull runs at the
 full ceiling — so scaling only ever bites in a choppy, directionless tape. These
 tests pin that behaviour down so the mechanism cannot silently drift.
 """
-import pytest
 
 from app.domain import Regime
 from app.risk.risk_profiles import (
