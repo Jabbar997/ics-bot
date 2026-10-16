@@ -40,7 +40,7 @@ def test_every_decision_creates_one_audit_log(db_url):
         broker = PaperBroker(s, cfg)
         de = DecisionEngine(s, cfg, broker)
         de.process_signal(_buy_signal(), _good_features(), _bull(), PortfolioState(266.0, 266.0), [])
-        decisions = list(DecisionRepository(s).for_day(datetime(2024, 1, 2)))
+        list(DecisionRepository(s).for_day(datetime(2024, 1, 2)))
     with session_scope() as s:
         from sqlalchemy import func, select
 

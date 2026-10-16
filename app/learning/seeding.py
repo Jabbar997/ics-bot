@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, delete, func, select
 
 from app.config import Config
 from app.db.models import DecisionOutcome, RejectedOutcome
@@ -67,6 +67,36 @@ def already_seeded(session) -> bool:
     return bool(SystemConfigRepository(session).get(SEEDED_KEY))
 
 
+def _is_seeded_trade():
+    """A seeded closed trade has neither a decision nor a position.
+
+    ``decision_id`` alone is not enough: ``record_outcomes`` leaves it NULL for a
+    live trade whose BUY decision cannot be found (e.g. a core-allocation
+    position) but always sets ``position_id``. Seeded rows come from another
+    database, so they carry neither.
+    """
+    return and_(DecisionOutcome.decision_id.is_(None), DecisionOutcome.position_id.is_(None))
+
+
+def _seeded_counts(session) -> tuple:
+    """(seeded rejections, seeded closed trades) already in the database.
+
+    Seeded rejections have no originating decision (``decision_id`` is NULL — see
+    the module docstring); live ones always have one. Seeded trades are told apart
+    by :func:`_is_seeded_trade`. Counting per
+    table is what lets a database seeded by an older version (rejections only)
+    pick up the half it is missing instead of being skipped, or duplicated by
+    ``--force``.
+    """
+    rejections = int(session.scalar(
+        select(func.count(RejectedOutcome.id)).where(RejectedOutcome.decision_id.is_(None))
+    ) or 0)
+    trades = int(session.scalar(
+        select(func.count(DecisionOutcome.id)).where(_is_seeded_trade())
+    ) or 0)
+    return rejections, trades
+
+
 def seed_from_backtest(
     target_session,
     config: Config,
@@ -92,7 +122,14 @@ def seed_from_backtest(
     )
     from app.learning.outcomes import record_outcomes
 
-    if already_seeded(target_session) and not force:
+    have_rejections, have_trades = _seeded_counts(target_session)
+    # Each table is seeded on its own. Without --force only what is missing is
+    # imported; with --force the seeded rows (and only those) are replaced, never
+    # duplicated.
+    want_rejections = force or have_rejections == 0
+    want_trades = force or have_trades == 0
+
+    if not (want_rejections or want_trades):
         # Re-running must not re-import, but it should still repair a missing
         # baseline: without one every verdict degrades to "nothing to compare
         # against", and measuring it here costs one pass over data already in
@@ -163,7 +200,15 @@ def seed_from_backtest(
 
     # 3) Back to the live database and import — outcomes only, nothing tradeable.
     database.init_engine(target_url, force_reset=True)
+    if not want_rejections:
+        rows = []
+    if not want_trades:
+        taken = []
     with database.session_scope() as live:
+        if force and want_rejections:
+            live.execute(delete(RejectedOutcome).where(RejectedOutcome.decision_id.is_(None)))
+        if force and want_trades:
+            live.execute(delete(DecisionOutcome).where(_is_seeded_trade()))
         for row in rows:
             live.add(RejectedOutcome(decision_id=None, **row))
         for row in taken:
@@ -172,7 +217,8 @@ def seed_from_backtest(
             save_baseline(live, baseline, _hit)
         cfg = SystemConfigRepository(live)
         cfg.set(SEEDED_KEY, datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
-        cfg.set(SEEDED_COUNT_KEY, str(len(rows)))
+        if want_rejections:
+            cfg.set(SEEDED_COUNT_KEY, str(len(rows)))
         live.flush()
         total = int(live.scalar(func.count(RejectedOutcome.id)) or 0)
 

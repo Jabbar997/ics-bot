@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from app.db.database import session_scope
-from app.db.models import Decision, RejectedOutcome
+from app.db.models import RejectedOutcome
 from app.db.repositories import DecisionRepository
 from app.learning.counterfactuals import (
     CAT_ALREADY_HOLDING,
@@ -305,3 +305,45 @@ def test_an_explicit_baseline_overrides_the_stored_one(db_url):
         save_baseline(s, 0.99, 0.58)  # deliberately absurd
         stat = analyze_calibration(s, baseline_return=0.0).by_category[CAT_STRATEGY_FILTER]
     assert stat.baseline_return == pytest.approx(0.0)
+
+
+# --------------------------------------------------------------------------- #
+# regression: live decisions carry microseconds, real price indexes are coarse
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+def test_forward_metrics_handles_microsecond_timestamps_on_any_index_unit(unit):
+    """Production failure 2026-10-15: "Cannot losslessly convert units".
+
+    A 22:15:04.223456 decision against an index held in seconds/milliseconds made
+    searchsorted raise, which aborted scoring of EVERY rejection that cycle.
+    """
+    from app.learning.counterfactuals import _forward_metrics
+
+    days = pd.bdate_range("2026-10-01", periods=20)
+    frame = pd.DataFrame(
+        {"open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0},
+        index=pd.DatetimeIndex(days).as_unit(unit),
+    )
+    at = datetime(2026, 10, 5, 22, 15, 4, 223456)  # after the Oct 5 bar
+    metrics = _forward_metrics(frame, at, horizon=5)
+    assert metrics is not None
+    fwd, mfe, mae = metrics
+    assert fwd == pytest.approx(0.01)       # 101 close / 100 open - 1
+    assert mfe == pytest.approx(0.02) and mae == pytest.approx(-0.01)
+
+
+@pytest.mark.parametrize("unit", ["s", "ms"])
+def test_scoring_survives_a_live_style_decision_on_a_coarse_index(db_url, unit):
+    """End to end, as production runs it: microsecond decision, second-resolution prices.
+
+    One such rejection used to abort the whole batch, so nothing was ever learned.
+    """
+    old = datetime.utcnow() - timedelta(days=120)       # has microseconds
+    with session_scope() as s:
+        _reject(s, "AAPL", old, "اتجاه صاعد لكن الحجم دون متوسط 20 يومًا.")
+        _reject(s, "MSFT", old, "اتجاه صاعد لكن RSI مرتفع (68).")
+    frame = _prices(start=old.strftime("%Y-%m-%d"), drift=0.01)
+    frame.index = frame.index.as_unit(unit)
+    with session_scope() as s:
+        created = record_rejected_outcomes(s, price_provider=lambda t: frame)
+        assert len(created) == 2

@@ -14,7 +14,7 @@ SAFETY: read-only price data. No provider here can place an order.
 """
 from __future__ import annotations
 
-from typing import Optional, Protocol
+from typing import Protocol
 
 import pandas as pd
 

@@ -107,6 +107,7 @@ python -m app.main weekly       # build the weekly report (add --send to push)
 python -m app.main backtest     # 5y backtest + walk-forward split summary
 python -m app.main backtest --period 5y
 python -m app.main bot          # run the Telegram bot (long-polling)
+python -m app.main web          # read-only local dashboard on http://127.0.0.1:8765 (--port to change)
 python -m app.main scheduler    # APScheduler: daily + weekly jobs (KSA times)
 ```
 

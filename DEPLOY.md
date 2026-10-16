@@ -89,7 +89,6 @@ railway variables --set TELEGRAM_BOT_TOKEN=xxxx \
    - `TELEGRAM_ALLOWED_USER_IDS`
    - (`DATABASE_URL` مضبوط مسبقًا على `sqlite:////var/data/ics.db`)
 4. **Create** → تابع **Logs** للتأكد من بدء التشغيل.
-
 > إن لم تستخدم Blueprint: **New → Background Worker**، Build = `pip install -r requirements.txt`،
 > Start = `python -m app.main bot`، وأضف **Disk** على `/var/data`، واضبط `DATABASE_URL` نفسه.
 
@@ -101,6 +100,7 @@ railway variables --set TELEGRAM_BOT_TOKEN=xxxx \
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | توكن البوت من @BotFather |
 | `TELEGRAM_ALLOWED_USER_IDS` | أرقام المستخدمين المصرّح لهم، مفصولة بفواصل |
+| `DASHBOARD_PASSWORD` | اختياري، للوحة العرض فقط (انظر القسم أدناه). فارغة = اللوحة مقفلة |
 | `DATABASE_URL` | `sqlite:////data/ics.db` (Railway) أو `sqlite:////var/data/ics.db` (Render) أو رابط Postgres |
 
 `pydantic-settings` يقرأ هذه المتغيّرات من بيئة المنصة مباشرةً (لا حاجة لملف `.env` هناك).
@@ -148,3 +148,26 @@ cd ics && git init && git add . && git commit -m "deploy" && git push -u origin 
 # إيقاف البوت المحلي قبل/بعد النشر (مهم لتجنّب Conflict)
 pkill -f "app.main bot"
 ```
+
+
+---
+
+## لوحة العرض على Render (اختياري — تتطلب خدمة جديدة)
+
+اللوحة (للعرض فقط، بكلمة مرور) تعمل **داخل عملية البوت** عندما تمنح المنصة متغيّر `PORT`.
+خدمة **Background Worker** لا تمنح `PORT`، لذلك على خدمتك الحالية **لا يتغيّر شيء** (لا لوحة، ولا أي أثر).
+
+لتفعيلها على Render يلزم خدمة من نوع **web** (ملف مثال جاهز: `render.web.example.yaml`).
+ولا يمكن تحويل worker قائمة إلى web، كما أن القرص يتبع خدمة واحدة فقط. فالطريق:
+
+1. **انسخ القاعدة احتياطيًا** من الخدمة الحالية (من تبويب Shell أو عبر SSH):
+   `sqlite3 /var/data/ics.db ".backup /var/data/ics-backup.db"` ثم نزّل الملف (`scp`).
+2. **أوقف** الخدمة القديمة (Suspend) قبل تشغيل الجديدة، فنسختان على نفس التوكن = `Conflict` من تيليجرام.
+3. أنشئ خدمة **web** جديدة من المثال (نفس الاسم يحتاج حذف القديمة أو اسمًا مختلفًا)، مع قرص على `/var/data`،
+   وضبط `TELEGRAM_BOT_TOKEN` و`TELEGRAM_ALLOWED_USER_IDS` و**`DASHBOARD_PASSWORD`** (كلمة طويلة).
+4. أوقف الخدمة الجديدة مؤقتًا، ارفع `ics-backup.db` إلى `/var/data/ics.db` ثم شغّلها.
+5. افتح `https://<اسم-الخدمة>.onrender.com` وأدخل أي اسم مستخدم مع كلمة المرور.
+
+> بدون `DASHBOARD_PASSWORD` تبقى الصفحة **مقفلة** (`/healthz` فقط) ويعمل البوت عادي.
+> بعد 5 محاولات خاطئة يُقفل العميل 5 دقائق. اللوحة بلا أي أزرار تحكّم.
+> بديل أنظف على المدى الطويل: نقل القاعدة إلى Postgres مُدارة تُشارَك بين خدمتين.

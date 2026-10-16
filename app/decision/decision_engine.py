@@ -11,14 +11,13 @@ opportunities), so nothing the system considers is ever lost.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 from app.config import Config
 from app.db.repositories import DecisionRepository
 from app.decision.dqs import calculate_dqs
 from app.domain import (
     Action,
-    DQSResult,
     FeatureSnapshot,
     RegimeResult,
     Signal,
@@ -187,7 +186,7 @@ class DecisionEngine:
         ts: Optional[datetime] = None,
     ):
         """Close a paper position and record the SELL decision + audit."""
-        order = self.broker.close_position(position, exit_price, reason=exit_signal.reason, ts=ts)
+        self.broker.close_position(position, exit_price, reason=exit_signal.reason, ts=ts)
         result_usd = position.realized_pnl
         result_pct = position.realized_pnl_pct
         return self.decisions.record(

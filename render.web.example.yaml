@@ -1,0 +1,36 @@
+# EXAMPLE ONLY — not read by Render. A `web` variant of render.yaml that also serves
+# the read-only dashboard. Render cannot convert an existing Background Worker into a
+# web service, and a disk belongs to ONE service, so using this means creating a NEW
+# service and copying the database across first. See "لوحة العرض على Render" in DEPLOY.md.
+#
+# NOTE: a paid instance type is required (no free tier keeps a disk + always-on
+# process). The persistent disk keeps the SQLite database across deploys.
+#
+# This is a `web` service (not `worker`) so the read-only dashboard can share the
+# bot's process and its disk: Render attaches a disk to ONE service only, so a
+# separate dashboard service could never see the real database. The bot itself
+# is unchanged and still long-polls Telegram.
+services:
+  - type: web
+    name: ics-bot
+    runtime: python
+    plan: starter            # paid worker plan
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.main bot
+    autoDeploy: true
+    numInstances: 1          # long-polling — never run more than one
+    healthCheckPath: /healthz   # public, returns "ok" only — no portfolio data
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false          # set the value in the Render dashboard (secret)
+      - key: TELEGRAM_ALLOWED_USER_IDS
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false          # set in the dashboard (secret). Without it the web
+                             # page stays LOCKED; the bot works either way.
+      - key: DATABASE_URL
+        value: sqlite:////var/data/ics.db
+    disk:
+      name: ics-data
+      mountPath: /var/data
+      sizeGB: 1

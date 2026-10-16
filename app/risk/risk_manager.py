@@ -15,7 +15,7 @@ Hard rules enforced (entries):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
 from app.config import Config

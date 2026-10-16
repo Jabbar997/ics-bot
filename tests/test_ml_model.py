@@ -5,6 +5,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# ML extras live in requirements-ml.txt (kept out of the deployed worker on purpose).
+# Without them these tests are skipped, not failed.
+pytest.importorskip("lightgbm")
+pytest.importorskip("optuna")
+pytest.importorskip("sklearn")
+
 from app.ml.dataset import FEATURE_COLUMNS, HORIZON_DAYS
 from app.ml.model import (
     DEFAULT_PARAMS,
