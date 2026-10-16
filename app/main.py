@@ -7,6 +7,7 @@ Subcommands::
     python -m app.main weekly         # build + (optionally) send weekly report
     python -m app.main backtest       # 5y backtest with walk-forward splits
     python -m app.main bot            # run the Telegram bot (long-polling)
+    python -m app.main web            # read-only local dashboard (http://127.0.0.1:8765)
     python -m app.main scheduler      # APScheduler: daily + weekly jobs
     python -m app.main demo           # offline synthetic cycle (no network)
     python -m app.main ml-shadow      # Phase 1 shadow evaluation + activation gate
@@ -376,6 +377,14 @@ def run_bot(config: Config) -> None:
     ICSBot(config).run()
 
 
+def run_web(config: Config, port: int = 8765) -> None:
+    """Read-only local dashboard; the Telegram bot is unaffected."""
+    from app.web.server import serve
+
+    init_db(config)
+    serve(config, port=port)
+
+
 def run_ml_shadow(config: Config, period: Optional[str] = None) -> None:
     """ICS-DOC-004 Phase 1 — shadow evaluation + activation gate. Read-only.
 
@@ -441,6 +450,7 @@ COMMANDS = (
     "weekly",
     "backtest",
     "bot",
+    "web",
     "scheduler",
     "demo",
     "ml-shadow",
@@ -457,6 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", default=None, help="Path to config.yaml")
     p.add_argument("--send", action="store_true", help="Send report to Telegram")
     p.add_argument("--period", default=None, help="Backtest history period, e.g. 5y")
+    p.add_argument("--port", type=int, default=8765, help="Dashboard port (web command)")
     p.add_argument(
         "--force",
         action="store_true",
@@ -482,6 +493,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         run_backtest(config, period=args.period)
     elif args.command == "bot":
         run_bot(config)
+    elif args.command == "web":
+        run_web(config, port=args.port)
     elif args.command == "scheduler":
         run_scheduler(config)
     elif args.command == "demo":
