@@ -69,3 +69,123 @@ def test_writes_are_rejected_and_do_not_change_state(base_url, config):
         urllib.request.urlopen(req)
     assert e.value.code == 405
     assert json.loads(_get(base_url + "/api/summary")[2])["frozen"] is False
+
+
+# --------------------------- hosted / password mode -------------------------- #
+import base64  # noqa: E402
+
+from app.web.server import MAX_FAILURES, start_hosted  # noqa: E402
+
+
+def _basic(password, user="x"):
+    return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+
+
+def _req(url, password=None, headers=None):
+    h = dict(headers or {})
+    if password is not None:
+        h["Authorization"] = _basic(password)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=h)) as r:
+            return r.status, r.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        return e.code, ""
+
+
+def _serve(config, **kw):
+    server = create_server(config, port=0, **kw)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_public_bind_needs_a_password_or_lock(config):
+    with pytest.raises(ValueError):
+        create_server(config, host="0.0.0.0", port=0)
+    create_server(config, host="0.0.0.0", port=0, password="s3cret").server_close()
+    create_server(config, host="0.0.0.0", port=0, locked=True).server_close()
+
+
+def test_password_is_required_and_checked(config, db_url):
+    server, base = _serve(config, password="s3cret")
+    try:
+        assert _req(base + "/api/summary")[0] == 401
+        assert _req(base + "/api/summary", "wrong")[0] == 401
+        assert _req(base + "/api/summary", "s3cret")[0] == 200
+        assert _req(base + "/", "s3cret")[0] == 200
+        # an empty password must never match
+        assert _req(base + "/api/summary", "")[0] == 401
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_health_check_is_public_and_carries_no_data(config, db_url):
+    server, base = _serve(config, password="s3cret")
+    try:
+        status, body = _req(base + "/healthz")
+        assert status == 200 and body == "ok"
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_repeated_wrong_passwords_lock_the_client_out(config, db_url):
+    server, base = _serve(config, password="s3cret")
+    try:
+        for _ in range(MAX_FAILURES):
+            assert _req(base + "/api/summary", "wrong")[0] == 401
+        assert _req(base + "/api/summary", "wrong")[0] == 429
+        assert _req(base + "/api/summary", "s3cret")[0] == 429  # even the right one, while locked
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_lockout_cannot_be_dodged_by_spoofing_forwarded_for(config, db_url):
+    server, base = _serve(config, password="s3cret")
+    try:
+        for i in range(MAX_FAILURES):
+            _req(base + "/api/summary", "wrong", {"X-Forwarded-For": f"9.9.9.{i}, 5.5.5.5"})
+        # the proxy-appended (last) entry is what counts, so this is still locked out
+        assert _req(base + "/api/summary", "wrong", {"X-Forwarded-For": "1.2.3.4, 5.5.5.5"})[0] == 429
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_locked_mode_serves_health_only(config, db_url):
+    server, base = _serve(config, locked=True)
+    try:
+        assert _req(base + "/healthz")[0] == 200
+        assert _req(base + "/api/summary")[0] == 503
+        assert _req(base + "/")[0] == 503
+    finally:
+        server.shutdown(); server.server_close()
+
+
+def test_start_hosted_is_a_noop_without_port(config, monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    assert start_hosted(config) is None
+
+
+def _free_port():
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_start_hosted_with_password_serves_the_dashboard(config, db_url, monkeypatch):
+    port = _free_port()
+    monkeypatch.setenv("PORT", str(port))
+    monkeypatch.setattr(config.env, "dashboard_password", "s3cret")
+    assert start_hosted(config) is not None
+    base = f"http://127.0.0.1:{port}"
+    assert _req(base + "/api/summary")[0] == 401
+    assert _req(base + "/api/summary", "s3cret")[0] == 200
+
+
+def test_start_hosted_without_password_stays_locked(config, db_url, monkeypatch):
+    port = _free_port()
+    monkeypatch.setenv("PORT", str(port))
+    monkeypatch.setattr(config.env, "dashboard_password", "")
+    assert start_hosted(config) is not None
+    base = f"http://127.0.0.1:{port}"
+    assert _req(base + "/healthz")[0] == 200   # the platform's port check passes
+    assert _req(base + "/api/summary")[0] == 503

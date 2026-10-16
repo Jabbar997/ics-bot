@@ -83,12 +83,16 @@ railway variables --set TELEGRAM_BOT_TOKEN=xxxx \
 ## المسار B — Render (Blueprint)
 
 1. ادخل <https://render.com> → **New → Blueprint** → اربط مستودع `ics-bot`.
-2. Render يقرأ `render.yaml` ويُنشئ خدمة **worker** اسمها `ics-bot` مع قرص دائم على `/var/data`.
+2. Render يقرأ `render.yaml` ويُنشئ خدمة **web** اسمها `ics-bot` مع قرص دائم على `/var/data` (نوع web لتشغيل لوحة العرض داخل نفس العملية؛ البوت نفسه لم يتغيّر).
 3. في إعداد الخدمة، عيّن قيم الأسرار (لأنها `sync: false`):
    - `TELEGRAM_BOT_TOKEN`
    - `TELEGRAM_ALLOWED_USER_IDS`
+   - `DASHBOARD_PASSWORD` — كلمة مرور لوحة العرض (اختر كلمة طويلة). بدونها تبقى اللوحة **مقفلة** ويعمل البوت عادي.
    - (`DATABASE_URL` مضبوط مسبقًا على `sqlite:////var/data/ics.db`)
 4. **Create** → تابع **Logs** للتأكد من بدء التشغيل.
+5. افتح رابط الخدمة (`https://<اسم-الخدمة>.onrender.com`). المتصفح يطلب اسم مستخدم وكلمة مرور:
+   اكتب أي اسم مستخدم، وكلمة المرور = `DASHBOARD_PASSWORD`. اللوحة **للعرض فقط** (لا إيقاف ولا استئناف).
+   بعد 5 محاولات خاطئة يُقفل العميل مؤقتًا (5 دقائق). المسار `/healthz` عام ولا يُظهر أي بيانات.
 
 > إن لم تستخدم Blueprint: **New → Background Worker**، Build = `pip install -r requirements.txt`،
 > Start = `python -m app.main bot`، وأضف **Disk** على `/var/data`، واضبط `DATABASE_URL` نفسه.
@@ -101,6 +105,7 @@ railway variables --set TELEGRAM_BOT_TOKEN=xxxx \
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | توكن البوت من @BotFather |
 | `TELEGRAM_ALLOWED_USER_IDS` | أرقام المستخدمين المصرّح لهم، مفصولة بفواصل |
+| `DASHBOARD_PASSWORD` | كلمة مرور لوحة العرض (Render فقط). فارغة = اللوحة مقفلة |
 | `DATABASE_URL` | `sqlite:////data/ics.db` (Railway) أو `sqlite:////var/data/ics.db` (Render) أو رابط Postgres |
 
 `pydantic-settings` يقرأ هذه المتغيّرات من بيئة المنصة مباشرةً (لا حاجة لملف `.env` هناك).

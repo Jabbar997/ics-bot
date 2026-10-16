@@ -6,16 +6,25 @@ A second front end next to the Telegram bot, built on the same
 Deliberately narrow:
 * **Read-only.** Only the report commands in :data:`READ_COMMANDS` are served.
   ``stop`` / ``resume`` are not routable, and only GET is accepted.
-* **Local only.** Binds to loopback; :func:`serve` refuses any other host.
+* **Local by default.** :func:`serve` binds to loopback only. A non-loopback
+  bind (the hosted worker) is refused unless a password is set, or the server
+  is explicitly ``locked`` (health check only, no data).
+* **Password-gated when hosted.** HTTP Basic over the platform's HTTPS, with
+  constant-time comparison and a per-client lockout after repeated failures.
 * **No new dependencies.** Standard library only.
 """
 from __future__ import annotations
 
+import base64
+import hmac
 import json
 import logging
+import os
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from app.config import Config
 from app.db.database import session_scope
@@ -26,6 +35,8 @@ from app.telegram.commands import SAFETY, CommandService
 log = logging.getLogger(__name__)
 
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+MAX_FAILURES = 5          # wrong passwords allowed ...
+FAILURE_WINDOW_S = 300    # ... within this many seconds, then the client is locked out
 INDEX_HTML = Path(__file__).with_name("index.html")
 
 # Report commands the dashboard may run. Control commands are excluded on purpose.
@@ -85,8 +96,25 @@ def build_summary(config: Config) -> Dict[str, object]:
     }
 
 
-def make_handler(config: Config) -> type:
+def _client_id(handler: BaseHTTPRequestHandler) -> str:
+    """Best-effort client key. Behind a proxy the LAST X-Forwarded-For entry is
+    the one the platform's own proxy appended; earlier ones are client-supplied."""
+    fwd = handler.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[-1].strip()
+    return handler.client_address[0]
+
+
+def make_handler(config: Config, password: Optional[str] = None, locked: bool = False) -> type:
     service = CommandService(config)
+    failures: Dict[str, List[float]] = {}
+    lock = threading.Lock()
+
+    def _recent_failures(client: str) -> List[float]:
+        now = time.monotonic()
+        recent = [t for t in failures.get(client, []) if now - t < FAILURE_WINDOW_S]
+        failures[client] = recent
+        return recent
     routes: Dict[str, Callable[[], object]] = {
         "summary": lambda: build_summary(config),
     }
@@ -110,8 +138,44 @@ def make_handler(config: Config) -> type:
             self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
 
+        def _authorized(self) -> bool:
+            """True when no password is required or the Basic credentials match."""
+            if not password:
+                return True
+            client = _client_id(self)
+            with lock:
+                if len(_recent_failures(client)) >= MAX_FAILURES:
+                    self._json(429, {"error": "محاولات كثيرة. حاول لاحقًا."})
+                    return False
+            supplied = ""
+            header = self.headers.get("Authorization", "")
+            if header.startswith("Basic "):
+                try:
+                    decoded = base64.b64decode(header[6:], validate=True).decode("utf-8")
+                    supplied = decoded.partition(":")[2]  # the user name is ignored
+                except Exception:
+                    supplied = ""
+            if supplied and hmac.compare_digest(supplied.encode("utf-8"), password.encode("utf-8")):
+                return True
+            if supplied:
+                with lock:
+                    _recent_failures(client).append(time.monotonic())
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="ICS", charset="UTF-8"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
+
         def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
             path = self.path.split("?", 1)[0]
+            if path == "/healthz":  # for the platform's port/health check; no data
+                self._send(200, b"ok", "text/plain; charset=utf-8")
+                return
+            if locked:
+                self._json(503, {"error": "اللوحة مقفلة: اضبط DASHBOARD_PASSWORD."})
+                return
+            if not self._authorized():
+                return
             if path in ("/", "/index.html"):
                 self._send(200, INDEX_HTML.read_bytes(), "text/html; charset=utf-8")
                 return
@@ -148,12 +212,39 @@ def make_handler(config: Config) -> type:
     return Handler
 
 
-def create_server(config: Config, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
-    if host not in LOOPBACK_HOSTS:
+def create_server(
+    config: Config,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    password: Optional[str] = None,
+    locked: bool = False,
+) -> ThreadingHTTPServer:
+    if host not in LOOPBACK_HOSTS and not (password or locked):
         raise ValueError(
-            f"The dashboard is read-only and local-only; refusing to bind to {host!r}."
+            f"Refusing to bind to {host!r} without a password: the dashboard shows the portfolio."
         )
-    return ThreadingHTTPServer((host, port), make_handler(config))
+    return ThreadingHTTPServer((host, port), make_handler(config, password, locked))
+
+
+def start_hosted(config: Config) -> Optional[threading.Thread]:
+    """Run the dashboard inside the bot's process when the platform gives a PORT.
+
+    Returns ``None`` when there is no PORT (a plain worker / local run). With a
+    PORT but no ``DASHBOARD_PASSWORD`` it starts *locked* — health check only —
+    so the platform's port scan passes and nothing is exposed.
+    """
+    raw = os.environ.get("PORT", "").strip()
+    if not raw:
+        return None
+    password = (config.env.dashboard_password or "").strip() or None
+    server = create_server(config, host="0.0.0.0", port=int(raw), password=password, locked=password is None)
+    if password is None:
+        log.warning("PORT is set but DASHBOARD_PASSWORD is not: dashboard stays locked.")
+    else:
+        log.info("ICS dashboard on port %s (read-only, password-protected).", raw)
+    thread = threading.Thread(target=server.serve_forever, name="ics-dashboard", daemon=True)
+    thread.start()
+    return thread
 
 
 def serve(config: Config, host: str = "127.0.0.1", port: int = 8765) -> None:

@@ -41,6 +41,9 @@ class EnvSettings(BaseSettings):
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_allowed_user_ids: str = Field(default="", alias="TELEGRAM_ALLOWED_USER_IDS")
     database_url: str = Field(default="sqlite:///./ics.db", alias="DATABASE_URL")
+    # Password for the hosted read-only dashboard (HTTP Basic). Empty = the
+    # dashboard stays locked when the platform exposes a PORT.
+    dashboard_password: str = Field(default="", alias="DASHBOARD_PASSWORD")
 
     @property
     def allowed_user_ids(self) -> List[int]:

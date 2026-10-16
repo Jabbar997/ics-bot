@@ -374,6 +374,9 @@ def run_bot(config: Config) -> None:
     from app.telegram.bot import ICSBot
 
     init_db(config)
+    from app.web.server import start_hosted
+
+    start_hosted(config)  # no-op unless the platform provides a PORT
     ICSBot(config).run()
 
 
