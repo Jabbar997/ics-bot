@@ -4,15 +4,10 @@
 # the parent directory, move this file to that root and add `rootDir: ics` under
 # the service.
 #
-# NOTE: a paid instance type is required (no free tier keeps a disk + always-on
-# process). The persistent disk keeps the SQLite database across deploys.
-#
-# This is a `web` service (not `worker`) so the read-only dashboard can share the
-# bot's process and its disk: Render attaches a disk to ONE service only, so a
-# separate dashboard service could never see the real database. The bot itself
-# is unchanged and still long-polls Telegram.
+# NOTE: a Background Worker requires a PAID instance type — Render has no free
+# worker tier. The persistent disk keeps the SQLite database across deploys.
 services:
-  - type: web
+  - type: worker
     name: ics-bot
     runtime: python
     plan: starter            # paid worker plan
@@ -20,15 +15,11 @@ services:
     startCommand: python -m app.main bot
     autoDeploy: true
     numInstances: 1          # long-polling — never run more than one
-    healthCheckPath: /healthz   # public, returns "ok" only — no portfolio data
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false          # set the value in the Render dashboard (secret)
       - key: TELEGRAM_ALLOWED_USER_IDS
         sync: false
-      - key: DASHBOARD_PASSWORD
-        sync: false          # set in the dashboard (secret). Without it the web
-                             # page stays LOCKED; the bot works either way.
       - key: DATABASE_URL
         value: sqlite:////var/data/ics.db
     disk:
