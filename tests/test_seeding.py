@@ -4,6 +4,8 @@ The guarantee that matters: seeding gives the learner evidence without touching
 anything tradeable. Nothing about the portfolio, the cash, the positions or the
 audit invariant may change.
 """
+from datetime import datetime
+
 from sqlalchemy import func, select
 
 from app.config import load_config
@@ -11,6 +13,7 @@ from app.db.database import session_scope
 from app.db.models import (
     AuditLog,
     Decision,
+    DecisionOutcome,
     PaperOrder,
     PortfolioSnapshot,
     Position,
@@ -156,3 +159,83 @@ def test_seeded_closed_trades_do_not_create_positions(db_url, synthetic_market, 
                            backtest_db=f"sqlite:///{tmp_path / 'i.db'}")
     with session_scope() as s:
         assert _counts(s) == before
+
+
+# --------------------------------------------------------------------------- #
+# a database seeded by the older, rejections-only version (the live Render state)
+# --------------------------------------------------------------------------- #
+def _seed(s, cfg, market, tmp_path, name, **kw):
+    return seed_from_backtest(s, cfg, market, backtest_db=f"sqlite:///{tmp_path / name}", **kw)
+
+
+def _rejection_and_trade_counts(s):
+    rej = int(s.scalar(func.count(RejectedOutcome.id)) or 0)
+    trades = int(s.scalar(func.count(DecisionOutcome.id)) or 0)
+    return rej, trades
+
+
+def _simulate_old_seed(s):
+    """Leave the flag and the rejections, drop the seeded trades: what the version
+    before 'seed the closed trades too' left behind."""
+    from sqlalchemy import delete
+    s.execute(delete(DecisionOutcome).where(DecisionOutcome.decision_id.is_(None)))
+
+
+def test_a_rejections_only_database_gets_its_missing_trades_without_duplicates(
+    db_url, synthetic_market, tmp_path
+):
+    cfg = load_config()
+    with session_scope() as s:
+        full = _seed(s, cfg, synthetic_market, tmp_path, "a.db")
+    assert full.imported > 0 and full.closed_trades > 0
+    with session_scope() as s:
+        _simulate_old_seed(s)
+        assert _rejection_and_trade_counts(s) == (full.imported, 0)
+        assert already_seeded(s) is True          # the flag that used to cause a skip
+
+    with session_scope() as s:
+        report = _seed(s, cfg, synthetic_market, tmp_path, "b.db")   # no --force
+    assert report.skipped is False
+    assert report.closed_trades == full.closed_trades
+    assert report.imported == 0                    # rejections were already there
+    with session_scope() as s:
+        assert _rejection_and_trade_counts(s) == (full.imported, full.closed_trades)
+
+
+def test_force_replaces_seeded_rows_instead_of_duplicating_them(db_url, synthetic_market, tmp_path):
+    cfg = load_config()
+    with session_scope() as s:
+        first = _seed(s, cfg, synthetic_market, tmp_path, "c.db")
+    with session_scope() as s:
+        again = _seed(s, cfg, synthetic_market, tmp_path, "d.db", force=True)
+    assert not again.skipped
+    with session_scope() as s:
+        assert _rejection_and_trade_counts(s) == (first.imported, first.closed_trades)
+
+
+def test_force_never_deletes_live_outcomes(db_url, synthetic_market, tmp_path):
+    """Live rows always carry a decision id; only the seeded (NULL) ones may be replaced."""
+    cfg = load_config()
+    with session_scope() as s:
+        _seed(s, cfg, synthetic_market, tmp_path, "e.db")
+    with session_scope() as s:
+        live_decision = Decision(
+            ticker="AAPL", action="buy", strategy="trend", price=100.0, dqs_score=80,
+            confidence=0.5, reason="live", market_regime="bull",
+        )
+        s.add(live_decision)
+        s.flush()
+        s.add(DecisionOutcome(
+            decision_id=live_decision.id, ticker="AAPL", strategy="trend",
+            realized_return=0.02, dqs_components_json="{}",
+        ))
+        s.add(RejectedOutcome(
+            decision_id=live_decision.id, ticker="AAPL", strategy="trend",
+            category="strategy_filter", forward_return=0.01, horizon_days=10,
+            rejected_at=datetime(2026, 1, 5),
+        ))
+    with session_scope() as s:
+        _seed(s, cfg, synthetic_market, tmp_path, "f.db", force=True)
+    with session_scope() as s:
+        assert s.scalar(select(func.count(DecisionOutcome.id)).where(DecisionOutcome.decision_id.is_not(None))) == 1
+        assert s.scalar(select(func.count(RejectedOutcome.id)).where(RejectedOutcome.decision_id.is_not(None))) == 1
