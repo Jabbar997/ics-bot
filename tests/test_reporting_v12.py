@@ -6,7 +6,7 @@ Covers the three defects found in production plus the weekend/stale-bar skip:
 3. risk-manager blocks were labelled "rule violations"
 4. the daily cycle re-ran on stale (weekend) data
 """
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 from app.config import load_config

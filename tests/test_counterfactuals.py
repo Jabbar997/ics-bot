@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from app.db.database import session_scope
-from app.db.models import Decision, RejectedOutcome
+from app.db.models import RejectedOutcome
 from app.db.repositories import DecisionRepository
 from app.learning.counterfactuals import (
     CAT_ALREADY_HOLDING,

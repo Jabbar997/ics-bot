@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>لوحة ICS</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1b1f24; --muted:#667085; --line:#e4e7ec;
+          --good:#067647; --bad:#b42318; --warn:#b54708; --accent:#1d4ed8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1318; --card:#181d24; --text:#e8eaed; --muted:#9aa4b2; --line:#2a313b;
+            --good:#4ade80; --bad:#f87171; --warn:#fbbf24; --accent:#7aa2ff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:15px/1.6 system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif; }
+  header { padding:16px; border-bottom:1px solid var(--line); background:var(--card);
+           display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; justify-content:space-between; }
+  h1 { margin:0; font-size:18px; }
+  .safety { color:var(--muted); font-size:13px; }
+  main { max-width:1000px; margin:0 auto; padding:16px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .label { color:var(--muted); font-size:13px; }
+  .value { font-size:22px; font-weight:600; margin-top:2px; }
+  .good { color:var(--good); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line);
+          border-radius:10px; overflow:hidden; margin-bottom:16px; }
+  th,td { padding:8px 12px; text-align:right; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; font-size:13px; }
+  tr:last-child td { border-bottom:0; }
+  nav { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  nav button { font:inherit; padding:6px 14px; border-radius:999px; cursor:pointer;
+               border:1px solid var(--line); background:var(--card); color:var(--text); }
+  nav button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  nav button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  pre { margin:0; padding:14px; background:var(--card); border:1px solid var(--line); border-radius:10px;
+        white-space:pre-wrap; word-break:break-word; font:14px/1.7 ui-monospace,Menlo,Consolas,monospace; min-height:120px; }
+  .empty { padding:14px; color:var(--muted); background:var(--card); border:1px solid var(--line);
+           border-radius:10px; margin-bottom:16px; }
+  .ltr { direction:ltr; unicode-bidi:isolate; display:inline-block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>لوحة ICS</h1>
+  <span class="safety" id="safety"></span>
+  <span class="safety" id="stamp"></span>
+</header>
+<main>
+  <section class="cards" id="cards" aria-live="polite"></section>
+  <h2 style="font-size:16px">المراكز المفتوحة</h2>
+  <div id="positions"></div>
+  <h2 style="font-size:16px">التقارير</h2>
+  <nav id="tabs" aria-label="التقارير"></nav>
+  <pre id="report" aria-live="polite">اختر تقريرًا.</pre>
+</main>
+<script>
+const REPORTS = [["today","اليوم"],["weekly","الأسبوع"],["performance","الأداء"],["portfolio","المحفظة"],
+  ["rejected","المرفوضة"],["audit","التدقيق"],["learning","التعلّم"],["health","الصحة"],
+  ["status","الحالة"],["rules","القواعد"],["watchlist","المتابعة"]];
+const money = v => "$" + Number(v).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+const flat = v => Math.abs(v) < 0.00005;
+const pct = v => (flat(v)||v>=0?"+":"") + (flat(v)?0:v*100).toFixed(2) + "%";
+const cls = v => flat(v) ? "" : v>0 ? "good" : "bad";
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function get(name){ const r = await fetch("/api/"+name); const j = await r.json();
+  if(!r.ok) throw new Error(j.error||"خطأ"); return j; }
+
+function card(label, value, c=""){ return `<div class="card"><div class="label">${label}</div><div class="value ${c}">${value}</div></div>`; }
+
+async function loadSummary(){
+  try {
+    const d = await get("summary");
+    document.getElementById("safety").textContent = d.safety;
+    const ks = d.frozen || d.kill_level ? `<span class="bad">مفعّل (مستوى ${d.kill_level})</span>` : `<span class="good">غير مفعّل</span>`;
+    document.getElementById("cards").innerHTML =
+      card("الإجمالي", `<span class="ltr">${money(d.total)}</span>`) +
+      card("العائد", `<span class="ltr">${pct(d.return_pct)}</span>`, cls(d.return_pct)) +
+      card("النقد", `<span class="ltr">${money(d.cash)}</span>`) +
+      card("المستثمَر", `<span class="ltr">${money(d.invested)}</span>`) +
+      card("مفتاح الإيقاف", ks) +
+      card("الوضع", d.mode === "paper_only" ? "ورقي فقط" : esc(d.mode));
+    const el = document.getElementById("positions");
+    if(!d.positions.length){ el.innerHTML = '<div class="empty">لا توجد مراكز مفتوحة.</div>'; }
+    else el.innerHTML = "<table><thead><tr><th>الرمز</th><th>الدخول</th><th>الآن</th><th>الربح/الخسارة</th><th>DQS</th></tr></thead><tbody>" +
+      d.positions.map(p => `<tr><td>${esc(p.ticker)}</td><td><span class="ltr">${money(p.entry)}</span></td><td><span class="ltr">${money(p.current)}</span></td>` +
+        `<td><span class="ltr ${cls(p.pnl_pct)}">${pct(p.pnl_pct)}</span></td><td>${esc(p.dqs)}</td></tr>`).join("") + "</tbody></table>";
+    document.getElementById("stamp").textContent = "آخر تحديث: " + new Date().toLocaleTimeString("ar");
+  } catch(e){ document.getElementById("cards").innerHTML = `<div class="empty bad">${esc(e.message)}</div>`; }
+}
+
+let current = null;
+async function showReport(name){
+  current = name;
+  document.querySelectorAll("#tabs button").forEach(b => b.setAttribute("aria-pressed", b.dataset.n===name));
+  const pre = document.getElementById("report"); pre.textContent = "جارٍ التحميل…";
+  try { const d = await get(name); if(current===name) pre.textContent = d.text; }
+  catch(e){ if(current===name) pre.textContent = e.message; }
+}
+document.getElementById("tabs").innerHTML = REPORTS.map(([n,l]) => `<button data-n="${n}" aria-pressed="false">${l}</button>`).join("");
+document.getElementById("tabs").addEventListener("click", e => { const b = e.target.closest("button"); if(b) showReport(b.dataset.n); });
+loadSummary(); showReport("today");
+setInterval(loadSummary, 30000);
+</script>
+</body>
+</html>

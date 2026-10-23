@@ -6,7 +6,6 @@ Per the benchmark policy the system tracks two returns and compares both to SPY:
 """
 from __future__ import annotations
 
-from typing import Optional
 
 import pandas as pd
 

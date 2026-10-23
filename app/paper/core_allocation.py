@@ -22,7 +22,6 @@ drawdown that breaches the mandate).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from app.config import Config
 from app.logging_config import get_logger

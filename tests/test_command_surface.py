@@ -6,7 +6,7 @@ exist. These tests close that gap in both directions.
 """
 from app.config import load_config
 from app.telegram.bot import ICSBot
-from app.telegram.commands import ALL_COMMANDS, COMMAND_GROUPS, CommandService
+from app.telegram.commands import ALL_COMMANDS, CommandService
 
 
 def _registered_names():
